@@ -56,6 +56,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const signIn = async (email: string, password: string) => {
+    // Check if Supabase is configured
+    if (!process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID || !process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC) {
+      throw new Error('Authentication is not configured. Please add Supabase credentials to .env.local')
+    }
+
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -64,6 +69,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const signUp = async (email: string, password: string, fullName: string) => {
+    // Check if Supabase is configured
+    if (!process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID || !process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC) {
+      throw new Error('Authentication is not configured. Please add Supabase credentials to .env.local')
+    }
+
     const { error } = await supabase.auth.signUp({
       email,
       password,
@@ -77,11 +87,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const signOut = async () => {
+    // Check if Supabase is configured
+    if (!process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID || !process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC) {
+      throw new Error('Authentication is not configured. Please add Supabase credentials to .env.local')
+    }
+
     const { error } = await supabase.auth.signOut()
     if (error) throw error
   }
 
   const signInWithGoogle = async () => {
+    // Check if Supabase is configured
+    if (!process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID || !process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC) {
+      throw new Error('Authentication is not configured. Please add Supabase credentials to .env.local')
+    }
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {

@@ -18,6 +18,11 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login' }: Au
   const [loading, setLoading] = useState(false)
   const { signIn, signUp, signInWithGoogle } = useAuth()
 
+  // Check if Supabase is configured
+  const isSupabaseConfigured = typeof window !== 'undefined' && 
+    process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID && 
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC
+
   if (!isOpen) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -93,6 +98,18 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login' }: Au
             {mode === 'login' ? 'Sign in to continue creating' : 'Create your account to get started'}
           </p>
 
+          {/* Configuration warning */}
+          {!isSupabaseConfigured && (
+            <div className="mb-4 p-4 bg-yellow-500/20 border border-yellow-500/50 rounded-lg">
+              <p className="text-yellow-400 text-sm font-medium mb-1">⚠️ Authentication Not Configured</p>
+              <p className="text-yellow-300 text-xs">
+                Add Supabase credentials to <code className="bg-black/30 px-1 py-0.5 rounded">.env.local</code> to enable auth.
+                <br />
+                See <code className="bg-black/30 px-1 py-0.5 rounded">ENV_SETUP.md</code> for instructions.
+              </p>
+            </div>
+          )}
+
           {/* Error message */}
           {error && (
             <div className="mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg">
@@ -103,7 +120,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login' }: Au
           {/* Google Sign In */}
           <button
             onClick={handleGoogleSignIn}
-            disabled={loading}
+            disabled={loading || !isSupabaseConfigured}
             className="w-full mb-4 px-4 py-3 bg-white hover:bg-gray-100 text-black font-medium rounded-lg transition-colors flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
@@ -180,7 +197,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login' }: Au
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !isSupabaseConfigured}
               className="w-full py-3 rounded-lg font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               style={{
                 backgroundImage: 'url(/vibe_gradient.png)',
@@ -189,7 +206,7 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login' }: Au
               }}
             >
               <span className="text-white drop-shadow-lg">
-                {loading ? 'Processing...' : mode === 'login' ? 'Sign In' : 'Create Account'}
+                {!isSupabaseConfigured ? 'Auth Not Configured' : loading ? 'Processing...' : mode === 'login' ? 'Sign In' : 'Create Account'}
               </span>
             </button>
           </form>

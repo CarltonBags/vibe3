@@ -1,6 +1,9 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import { useAuth } from '@/lib/auth-context'
+import AuthModal from './components/AuthModal'
+import UserMenu from './components/UserMenu'
 
 interface FileContent {
   path: string;
@@ -15,11 +18,14 @@ interface SandboxResponse {
   files?: FileContent[];
   message?: string;
   error?: string;
+  generationsRemaining?: number;
+  upgradeRequired?: boolean;
 }
 
 type ViewMode = 'preview' | 'code';
 
 export default function Home() {
+  const { user, loading: authLoading } = useAuth()
   const [prompt, setPrompt] = useState('')
   const [isGenerating, setIsGenerating] = useState(false)
   const [hasGenerated, setHasGenerated] = useState(false)
@@ -28,16 +34,24 @@ export default function Home() {
   const [error, setError] = useState('')
   const [viewMode, setViewMode] = useState<ViewMode>('preview')
   const [selectedFile, setSelectedFile] = useState<string>('app/page.tsx')
+  const [showAuthModal, setShowAuthModal] = useState(false)
   const hasStartedRef = useRef(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!prompt.trim() || hasStartedRef.current) return
     
+    // Check if user is authenticated
+    if (!user) {
+      setShowAuthModal(true)
+      return
+    }
+    
     hasStartedRef.current = true
     setHasGenerated(true)
     setIsGenerating(true)
     setProgress('🤖 Generating code with AI...')
+    setError('') // Clear previous errors
     
     try {
       // Simulate progress updates
@@ -61,11 +75,33 @@ export default function Home() {
 
       clearInterval(progressTimer)
 
+      const data: SandboxResponse = await res.json()
+      
+      // Check for auth or limit errors
+      if (res.status === 401) {
+        setError('Please sign in to continue')
+        setShowAuthModal(true)
+        setHasGenerated(false)
+        hasStartedRef.current = false
+        setIsGenerating(false)
+        return
+      }
+      
+      if (res.status === 403) {
+        setError(data.error || 'Generation limit exceeded')
+        if (data.upgradeRequired) {
+          setError(`${data.error} - Upgrade to continue. Generations remaining: ${data.generationsRemaining || 0}`)
+        }
+        setHasGenerated(false)
+        hasStartedRef.current = false
+        setIsGenerating(false)
+        return
+      }
+      
       if (!res.ok) {
         throw new Error('Failed to create sandbox')
       }
 
-      const data: SandboxResponse = await res.json()
       setSandboxData(data)
       setProgress('✅ Website is ready!')
       
@@ -76,6 +112,7 @@ export default function Home() {
       console.error('Error creating sandbox:', err)
       setError('Failed to create sandbox and execute code')
       setProgress('')
+      hasStartedRef.current = false
     } finally {
       setIsGenerating(false)
     }
@@ -91,13 +128,35 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen flex bg-black">
-      {/* Left Panel - Input & Status */}
-      <div className={`${hasGenerated ? 'w-1/3' : 'w-full'} transition-all duration-500 flex flex-col bg-black p-8`}>
-        <div className={`${hasGenerated ? '' : 'flex-1 flex items-center justify-center'}`}>
-          <div className="w-full max-w-2xl">
-            {!hasGenerated && (
-              <h1 className="text-5xl font-bold text-center mb-12">
+    <>
+      <main className="min-h-screen flex bg-black">
+        {/* User Menu - Top Right */}
+        {!hasGenerated && (
+          <div className="fixed top-4 right-4 z-40">
+            {user ? (
+              <UserMenu />
+            ) : (
+              <button
+                onClick={() => setShowAuthModal(true)}
+                className="px-6 py-2 rounded-lg font-medium transition-all"
+                style={{
+                  backgroundImage: 'url(/vibe_gradient.png)',
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center'
+                }}
+              >
+                <span className="text-white drop-shadow-lg">Sign In</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Left Panel - Input & Status */}
+        <div className={`${hasGenerated ? 'w-1/3' : 'w-full'} transition-all duration-500 flex flex-col bg-black p-8`}>
+          <div className={`${hasGenerated ? '' : 'flex-1 flex items-center justify-center'}`}>
+            <div className="w-full max-w-2xl">
+              {!hasGenerated && (
+                <h1 className="text-5xl font-bold text-center mb-12">
                 <span className="text-white">give in to the </span>
                 <span 
                   className="inline-block bg-clip-text text-transparent bg-cover bg-center"
@@ -469,5 +528,12 @@ export default function Home() {
         </div>
       )}
     </main>
+
+    {/* Auth Modal */}
+    <AuthModal 
+      isOpen={showAuthModal} 
+      onClose={() => setShowAuthModal(false)} 
+    />
+  </>
   )
 }

@@ -1,0 +1,30 @@
+{
+  "name": "lovable_clone",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@daytonaio/sdk": "^0.111.1",
+    "dotenv": "^16.3.1",
+    "next": "^16.0.0",
+    "node-polyfill-webpack-plugin": "^4.1.0",
+    "openai": "^6.6.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "unenv": "^1.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.9",
+    "@types/react": "^18.2.33",
+    "@types/react-dom": "^18.2.14",
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.31",
+    "tailwindcss": "^3.3.5",
+    "typescript": "^5.2.2"
+  }
+}

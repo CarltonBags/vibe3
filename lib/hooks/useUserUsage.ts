@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 
 interface UserUsage {
@@ -18,33 +18,41 @@ export function useUserUsage() {
   const [usage, setUsage] = useState<UserUsage | null>(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
+  const fetchUsage = useCallback(async () => {
     if (!user) {
+      console.log('useUserUsage: No user, skipping fetch')
       setUsage(null)
       setLoading(false)
       return
     }
 
+    console.log('useUserUsage: Fetching usage for user:', user.id)
+    try {
+      const res = await fetch('/api/user/usage')
+      console.log('useUserUsage: Response status:', res.status)
+      
+      if (res.ok) {
+        const data = await res.json()
+        console.log('useUserUsage: Fetched data:', data)
+        setUsage(data)
+      } else {
+        const errorData = await res.json().catch(() => ({}))
+        console.error('useUserUsage: Failed to fetch usage:', res.status, errorData)
+      }
+    } catch (error) {
+      console.error('useUserUsage: Error fetching usage:', error)
+    } finally {
+      setLoading(false)
+    }
+  }, [user])
+
+  useEffect(() => {
     fetchUsage()
     
     // Refresh every 30 seconds
     const interval = setInterval(fetchUsage, 30000)
     return () => clearInterval(interval)
-  }, [user])
-
-  const fetchUsage = async () => {
-    try {
-      const res = await fetch('/api/user/usage')
-      if (res.ok) {
-        const data = await res.json()
-        setUsage(data)
-      }
-    } catch (error) {
-      console.error('Failed to fetch usage:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
+  }, [fetchUsage])
 
   return { usage, loading, refetch: fetchUsage }
 }

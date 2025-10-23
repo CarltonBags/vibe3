@@ -5,9 +5,27 @@ import { useUserUsage } from '@/lib/hooks/useUserUsage'
 export default function UsageIndicator() {
   const { usage, loading } = useUserUsage()
 
-  if (loading || !usage) {
+  // Show loading skeleton
+  if (loading) {
+    return (
+      <div className="bg-zinc-900/90 backdrop-blur-sm border border-zinc-700 rounded-lg px-4 py-2.5 shadow-xl">
+        <div className="flex items-center gap-4 animate-pulse">
+          <div className="h-10 w-20 bg-zinc-800 rounded"></div>
+          <div className="h-12 w-px bg-zinc-700"></div>
+          <div className="h-10 w-32 bg-zinc-800 rounded"></div>
+          <div className="h-12 w-px bg-zinc-700"></div>
+          <div className="h-10 w-24 bg-zinc-800 rounded"></div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!usage) {
+    console.log('UsageIndicator: No usage data available')
     return null
   }
+
+  console.log('UsageIndicator: Rendering with usage:', usage)
 
   const generationsPercent = (usage.generationsUsed / usage.generationsLimit) * 100
   const isLow = generationsPercent >= 80

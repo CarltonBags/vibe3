@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/lib/auth-context'
+import { useUserUsage } from '@/lib/hooks/useUserUsage'
 
 export default function UserMenu() {
   const { user, signOut } = useAuth()
+  const { usage, loading: usageLoading } = useUserUsage()
   const [isOpen, setIsOpen] = useState(false)
   const [userEmail, setUserEmail] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
@@ -52,12 +54,118 @@ export default function UserMenu() {
 
       {/* Dropdown menu */}
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-64 bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden z-50">
+        <div className="absolute right-0 mt-2 w-80 bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden z-50">
           {/* User info */}
           <div className="p-4 border-b border-zinc-800">
             <p className="text-sm text-gray-400">Signed in as</p>
             <p className="text-sm font-medium text-white truncate">{userEmail}</p>
           </div>
+
+          {/* Usage Stats */}
+          {!usageLoading && usage && (
+            <div className="p-4 bg-zinc-800/50 border-b border-zinc-800">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-semibold text-gray-400 uppercase">Your Plan</p>
+                <span 
+                  className="text-xs font-bold px-2 py-1 rounded"
+                  style={{
+                    backgroundImage: 'url(/vibe_gradient.png)',
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center'
+                  }}
+                >
+                  <span className="text-white drop-shadow-lg">{usage.tierDisplayName}</span>
+                </span>
+              </div>
+
+              {/* Generations Progress */}
+              <div className="mb-3">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-xs text-gray-400">Generations</p>
+                  <p className="text-xs font-medium text-white">
+                    {usage.generationsUsed} / {usage.generationsLimit}
+                  </p>
+                </div>
+                <div className="w-full bg-zinc-700 rounded-full h-2 overflow-hidden">
+                  <div 
+                    className="h-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(100, (usage.generationsUsed / usage.generationsLimit) * 100)}%`,
+                      backgroundImage: 'url(/vibe_gradient.png)',
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center'
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  {Math.max(0, usage.generationsLimit - usage.generationsUsed)} remaining this month
+                </p>
+              </div>
+
+              {/* Projects Progress */}
+              <div className="mb-3">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-xs text-gray-400">Projects</p>
+                  <p className="text-xs font-medium text-white">
+                    {usage.projectsCreated} / {usage.projectsLimit}
+                  </p>
+                </div>
+                <div className="w-full bg-zinc-700 rounded-full h-2 overflow-hidden">
+                  <div 
+                    className="h-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(100, (usage.projectsCreated / usage.projectsLimit) * 100)}%`,
+                      backgroundImage: 'url(/vibe_gradient.png)',
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center'
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  {Math.max(0, usage.projectsLimit - usage.projectsCreated)} slots available
+                </p>
+              </div>
+
+              {/* Tokens Used */}
+              <div className="pt-3 border-t border-zinc-700">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-gray-400">Tokens Used</p>
+                  <p className="text-xs font-medium text-purple-400">
+                    {usage.tokensUsed.toLocaleString()}
+                  </p>
+                </div>
+              </div>
+
+              {/* Upgrade CTA if close to limits */}
+              {(usage.generationsUsed / usage.generationsLimit >= 0.8 || usage.tierName === 'free') && (
+                <button
+                  onClick={() => {
+                    setIsOpen(false)
+                    window.location.href = '/pricing'
+                  }}
+                  className="w-full mt-3 px-3 py-2 rounded-lg text-xs font-medium transition-all"
+                  style={{
+                    backgroundImage: 'url(/vibe_gradient.png)',
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center'
+                  }}
+                >
+                  <span className="text-white drop-shadow-lg">
+                    {usage.tierName === 'free' ? 'Upgrade for More' : 'Running Low? Upgrade'}
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {usageLoading && (
+            <div className="p-4 bg-zinc-800/50 border-b border-zinc-800">
+              <div className="animate-pulse">
+                <div className="h-4 bg-zinc-700 rounded mb-2"></div>
+                <div className="h-8 bg-zinc-700 rounded"></div>
+              </div>
+            </div>
+          )}
 
           {/* Menu items */}
           <div className="py-2">

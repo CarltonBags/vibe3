@@ -4,6 +4,7 @@ import { useState, useRef } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import AuthModal from './components/AuthModal'
 import UserMenu from './components/UserMenu'
+import UsageIndicator from './components/UsageIndicator'
 
 interface FileContent {
   path: string;
@@ -130,6 +131,9 @@ export default function Home() {
   return (
     <>
       <main className="min-h-screen flex bg-black">
+        {/* Usage Indicator - Top Left (only when logged in and not generating) */}
+        {!hasGenerated && user && <UsageIndicator />}
+
         {/* User Menu - Top Right */}
         {!hasGenerated && (
           <div className="fixed top-4 right-4 z-40">

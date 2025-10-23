@@ -19,8 +19,17 @@ const supabaseUrl = supabaseProjectId ? `https://${supabaseProjectId}.supabase.c
 
 // Client for browser/client-side operations (uses anon key with RLS)
 // Create a dummy client if not configured
+// IMPORTANT: Configure to use cookies for SSR compatibility
 export const supabase = isSupabaseConfigured 
-  ? createClient(supabaseUrl, supabaseAnonKey!)
+  ? createClient(supabaseUrl, supabaseAnonKey!, {
+      auth: {
+        storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+        autoRefreshToken: true,
+        persistSession: true,
+        detectSessionInUrl: true,
+        flowType: 'pkce'
+      }
+    })
   : createClient('https://placeholder.supabase.co', 'placeholder-key')
 
 // Admin client for server-side operations (bypasses RLS)

@@ -18,6 +18,8 @@ export function useUserUsage() {
   const [usage, setUsage] = useState<UserUsage | null>(null)
   const [loading, setLoading] = useState(true)
 
+  console.log('useUserUsage: user from auth context:', user ? `Authenticated (${user.id})` : 'Not authenticated')
+
   const fetchUsage = useCallback(async () => {
     // Don't fetch if no user
     if (!user) {

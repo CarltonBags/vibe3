@@ -9,6 +9,12 @@ export async function GET(request: Request) {
     // Create a Supabase client for server-side with cookies
     const cookieStore = await cookies()
     
+    // Debug: Check what cookies we have
+    const allCookies = cookieStore.getAll()
+    console.log('Usage API: Available cookies:', allCookies.map(c => c.name).join(', '))
+    const authCookies = allCookies.filter(c => c.name.startsWith('sb-'))
+    console.log('Usage API: Auth cookies found:', authCookies.length)
+    
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID 
         ? `https://${process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID}.supabase.co`
@@ -29,9 +35,12 @@ export async function GET(request: Request) {
     )
 
     // Get authenticated user from cookies
-    const { data: { session } } = await supabase.auth.getSession()
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession()
     
     console.log('Usage API: Session check:', session ? 'Authenticated' : 'Not authenticated')
+    if (sessionError) {
+      console.error('Usage API: Session error:', sessionError)
+    }
     
     if (!session) {
       return NextResponse.json(

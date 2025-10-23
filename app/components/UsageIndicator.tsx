@@ -5,6 +5,8 @@ import { useUserUsage } from '@/lib/hooks/useUserUsage'
 export default function UsageIndicator() {
   const { usage, loading } = useUserUsage()
 
+  console.log('UsageIndicator: loading=', loading, 'usage=', usage)
+
   // Show loading skeleton
   if (loading) {
     return (

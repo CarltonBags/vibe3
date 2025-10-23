@@ -19,8 +19,8 @@ export function useUserUsage() {
   const [loading, setLoading] = useState(true)
 
   const fetchUsage = useCallback(async () => {
+    // Don't fetch if no user
     if (!user) {
-      console.log('useUserUsage: No user, skipping fetch')
       setUsage(null)
       setLoading(false)
       return
@@ -36,8 +36,11 @@ export function useUserUsage() {
         console.log('useUserUsage: Fetched data:', data)
         setUsage(data)
       } else {
-        const errorData = await res.json().catch(() => ({}))
-        console.error('useUserUsage: Failed to fetch usage:', res.status, errorData)
+        // Don't log error if it's just 401 (user not logged in)
+        if (res.status !== 401) {
+          const errorData = await res.json().catch(() => ({}))
+          console.error('useUserUsage: Failed to fetch usage:', res.status, errorData)
+        }
       }
     } catch (error) {
       console.error('useUserUsage: Error fetching usage:', error)
@@ -47,12 +50,19 @@ export function useUserUsage() {
   }, [user])
 
   useEffect(() => {
-    fetchUsage()
-    
-    // Refresh every 30 seconds
-    const interval = setInterval(fetchUsage, 30000)
-    return () => clearInterval(interval)
-  }, [fetchUsage])
+    // Only fetch if user is logged in
+    if (user) {
+      fetchUsage()
+      
+      // Refresh every 30 seconds
+      const interval = setInterval(fetchUsage, 30000)
+      return () => clearInterval(interval)
+    } else {
+      // User not logged in, set loading to false
+      setLoading(false)
+      setUsage(null)
+    }
+  }, [user, fetchUsage])
 
   return { usage, loading, refetch: fetchUsage }
 }

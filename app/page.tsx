@@ -131,12 +131,13 @@ export default function Home() {
   return (
     <>
       <main className="min-h-screen flex bg-black">
-        {/* Usage Indicator - Top Left (only when logged in and not generating) */}
-        {!hasGenerated && user && <UsageIndicator />}
-
-        {/* User Menu - Top Right */}
+        {/* Top Right - Usage Indicator + User Menu */}
         {!hasGenerated && (
-          <div className="fixed top-4 right-4 z-40">
+          <div className="fixed top-4 right-4 z-40 flex items-center gap-4">
+            {/* Usage Indicator (only when logged in) */}
+            {user && <UsageIndicator />}
+            
+            {/* User Menu or Sign In Button */}
             {user ? (
               <UserMenu />
             ) : (

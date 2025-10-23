@@ -3,14 +3,28 @@ import { NextResponse } from 'next/server';
 import { OpenAI } from 'openai';
 import fs from 'fs';
 import path from 'path';
+import { supabase } from '@/lib/supabase';
+import { 
+  checkUserLimits, 
+  incrementUsage, 
+  createProject, 
+  updateProject, 
+  saveProjectFiles,
+  logGeneration,
+  getUserWithTier
+} from '@/lib/db';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_KEY,
 });
 
 export async function POST(req: Request) {
+  const startTime = Date.now();
+  let projectId: string | null = null;
+  let tokensUsed = 0;
+
   try {
-    const { prompt } = await req.json();
+    const { prompt, projectId: existingProjectId } = await req.json();
 
     if (!prompt) {
       return NextResponse.json(
@@ -18,6 +32,41 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
+
+    // Get authenticated user
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      return NextResponse.json(
+        { error: 'Unauthorized - Please sign in' },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
+    // Check user limits
+    const limits = await checkUserLimits(userId);
+    if (!limits.canGenerate) {
+      return NextResponse.json(
+        { 
+          error: limits.reason,
+          generationsRemaining: limits.generationsRemaining,
+          upgradeRequired: true
+        },
+        { status: 403 }
+      );
+    }
+
+    // Get user tier info for token limits
+    const userWithTier = await getUserWithTier(userId);
+    if (!userWithTier) {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
+      );
+    }
+
+    const maxTokens = userWithTier.tier.max_tokens_per_generation;
 
     // Step 1: Generate Next.js project structure using OpenAI
     // Using gpt-4o-mini for cost efficiency (~98% cheaper than gpt-4)
@@ -419,10 +468,11 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
         }
       ],
       temperature: 0.7,
-      max_tokens: 6000, // Increased for multiple files
+      max_tokens: maxTokens,
     });
 
     let responseText = completion.choices[0]?.message?.content || '';
+    tokensUsed = completion.usage?.total_tokens || 0;
     
     // Parse JSON response
     let filesData: { files: Array<{ path: string; content: string }> };
@@ -650,12 +700,66 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
         ...filesData.files
       ];
 
+      // Create or update project in database
+      if (existingProjectId && typeof existingProjectId === 'string') {
+        // Update existing project
+        projectId = existingProjectId;
+        await updateProject(projectId, {
+          sandbox_id: sandboxId,
+          preview_url: previewLink.url,
+          preview_token: previewLink.token,
+          status: 'active',
+          last_generated_at: new Date().toISOString(),
+          generation_count: 1 // You might want to increment this
+        });
+      } else {
+        // Create new project
+        const project = await createProject(
+          userId,
+          `Project ${Date.now()}`, // Generate a default name
+          prompt,
+          'AI generated website'
+        );
+        projectId = project.id;
+        
+        await updateProject(projectId, {
+          sandbox_id: sandboxId,
+          preview_url: previewLink.url,
+          preview_token: previewLink.token,
+          status: 'active',
+          last_generated_at: new Date().toISOString()
+        });
+      }
+
+      // Save project files to database
+      if (projectId) {
+        await saveProjectFiles(projectId, allFiles);
+      }
+
+      // Increment user usage
+      await incrementUsage(userId, tokensUsed, !existingProjectId);
+
+      // Log generation for analytics
+      const duration = Date.now() - startTime;
+      const cost = Math.round((tokensUsed / 1000000) * 0.60 * 100); // GPT-4o-mini cost in cents
+      await logGeneration(
+        userId,
+        projectId,
+        prompt,
+        tokensUsed,
+        cost,
+        duration,
+        'success'
+      );
+
       return NextResponse.json({
         success: true,
+        projectId: projectId,
         sandboxId: sandboxId,
         url: previewLink.url,
         token: previewLink.token,
         files: allFiles,
+        generationsRemaining: limits.generationsRemaining - 1,
         message: `Next.js project created with ${allFiles.length} files (GitHub-ready)`
       });
 
@@ -672,6 +776,28 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
 
   } catch (error) {
     console.error('API error:', error);
+    
+    // Log failed generation if we have a user session
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        const duration = Date.now() - startTime;
+        const cost = Math.round((tokensUsed / 1000000) * 0.60 * 100);
+        await logGeneration(
+          session.user.id,
+          projectId,
+          '', // prompt might not be available
+          tokensUsed,
+          cost,
+          duration,
+          'error',
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      }
+    } catch (logError) {
+      console.error('Failed to log error:', logError);
+    }
+    
     return NextResponse.json(
       { 
         success: false,

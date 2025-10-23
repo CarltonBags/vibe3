@@ -27,9 +27,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // Check if Supabase is configured
+    const isConfigured = process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID && process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC
+    
+    if (!isConfigured) {
+      setLoading(false)
+      return
+    }
+
     // Check active sessions
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
+      setLoading(false)
+    }).catch((error) => {
+      console.error('Auth session error:', error)
       setLoading(false)
     })
 

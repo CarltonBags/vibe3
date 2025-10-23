@@ -1,19 +1,37 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = `https://${process.env.SUPABASE_PROJECT_ID}.supabase.co`
-const supabaseAnonKey = process.env.SUPABASE_ANON_PUBLIC!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE!
+const supabaseProjectId = process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID || process.env.SUPABASE_PROJECT_ID
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC || process.env.SUPABASE_ANON_PUBLIC
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE
+
+// Check if Supabase is configured
+const isSupabaseConfigured = Boolean(supabaseProjectId && supabaseAnonKey)
+
+if (!isSupabaseConfigured && typeof window !== 'undefined') {
+  console.warn('⚠️ Supabase is not configured. Authentication features will be disabled.')
+  console.warn('📝 Please add these to your .env.local:')
+  console.warn('   NEXT_PUBLIC_SUPABASE_PROJECT_ID=your-project-id')
+  console.warn('   NEXT_PUBLIC_SUPABASE_ANON_PUBLIC=your-anon-key')
+  console.warn('   SUPABASE_SERVICE_ROLE=your-service-role-key')
+}
+
+const supabaseUrl = supabaseProjectId ? `https://${supabaseProjectId}.supabase.co` : 'https://placeholder.supabase.co'
 
 // Client for browser/client-side operations (uses anon key with RLS)
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+// Create a dummy client if not configured
+export const supabase = isSupabaseConfigured 
+  ? createClient(supabaseUrl, supabaseAnonKey!)
+  : createClient('https://placeholder.supabase.co', 'placeholder-key')
 
 // Admin client for server-side operations (bypasses RLS)
-export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false
-  }
-})
+export const supabaseAdmin = (isSupabaseConfigured && supabaseServiceKey)
+  ? createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    })
+  : createClient('https://placeholder.supabase.co', 'placeholder-key')
 
 // Database types
 export interface Database {

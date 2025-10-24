@@ -87,7 +87,8 @@ export async function POST(
     if (project.sandbox_id) {
       try {
         console.log(`Cleaning up old sandbox: ${project.sandbox_id}`);
-        await daytona.remove(project.sandbox_id);
+        const oldSandbox = await daytona.get(project.sandbox_id);
+        await oldSandbox.remove();
         console.log('Old sandbox removed successfully');
       } catch (cleanupError) {
         console.warn('Could not remove old sandbox (might already be deleted):', cleanupError);
@@ -95,57 +96,56 @@ export async function POST(
       }
     }
 
-    // Create new sandbox
+    // Create new sandbox (same as /api/generate)
     console.log('Creating fresh sandbox...');
-    const sandbox = await daytona.create({
-      image: 'node:20-alpine',
-      public: true,
-      envVars: {
-        NODE_ENV: 'development'
-      }
-    });
+    const sandbox = await daytona.create();
     console.log('Sandbox created:', sandbox.id);
 
-    // Upload template files (package.json, etc.)
-    const templatesDir = path.join(process.cwd(), 'sandbox-templates');
-    const templateFiles = [
-      'package.json',
-      'tsconfig.json',
-      'tailwind.config.js',
-      'postcss.config.js',
-      'next.config.js',
-      '.env.local'
-    ];
+    // Read template files
+    const templatesPath = path.join(process.cwd(), 'sandbox-templates');
+    const packageJson = fs.readFileSync(path.join(templatesPath, 'package.json'), 'utf-8');
+    const nextConfig = fs.readFileSync(path.join(templatesPath, 'next.config.js'), 'utf-8');
+    const tailwindConfig = fs.readFileSync(path.join(templatesPath, 'tailwind.config.js'), 'utf-8');
+    const postcssConfig = fs.readFileSync(path.join(templatesPath, 'postcss.config.js'), 'utf-8');
+    const tsConfig = fs.readFileSync(path.join(templatesPath, 'tsconfig.json'), 'utf-8');
+    const globalsCss = '@tailwind base;\n@tailwind components;\n@tailwind utilities;';
+    const layoutTsx = fs.readFileSync(path.join(templatesPath, 'app/layout.tsx'), 'utf-8');
 
-    for (const file of templateFiles) {
-      const filePath = path.join(templatesDir, file);
-      if (fs.existsSync(filePath)) {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        await sandbox.fs.writeFile(file, content);
-      }
-    }
+    // Create project structure
+    await sandbox.fs.createFolder('/workspace/app', '755');
+    await sandbox.fs.createFolder('/workspace/app/components', '755');
+    
+    // Write configuration files
+    await sandbox.fs.uploadFile(Buffer.from(packageJson), '/workspace/package.json');
+    await sandbox.fs.uploadFile(Buffer.from(nextConfig), '/workspace/next.config.js');
+    await sandbox.fs.uploadFile(Buffer.from(tailwindConfig), '/workspace/tailwind.config.js');
+    await sandbox.fs.uploadFile(Buffer.from(postcssConfig), '/workspace/postcss.config.js');
+    await sandbox.fs.uploadFile(Buffer.from(tsConfig), '/workspace/tsconfig.json');
+    await sandbox.fs.uploadFile(Buffer.from(globalsCss), '/workspace/app/globals.css');
+    await sandbox.fs.uploadFile(Buffer.from(layoutTsx), '/workspace/app/layout.tsx');
 
     // Upload saved project files
+    console.log(`Uploading ${files.length} saved files...`);
     for (const file of files) {
-      await sandbox.fs.writeFile(file.file_path, file.content);
-      console.log(`Uploaded: ${file.file_path}`);
+      const filePath = `/workspace/${file.file_path}`;
+      console.log(`Uploading: ${filePath}`);
+      await sandbox.fs.uploadFile(Buffer.from(file.content), filePath);
     }
 
     // Install dependencies
     console.log('Installing dependencies...');
-    await sandbox.process.executeCommand('npm install');
+    await sandbox.process.executeCommand('cd /workspace && npm install');
 
     // Start dev server
-    console.log('Starting dev server...');
-    await sandbox.process.executeCommand('npm run dev', {
-      background: true,
-    });
+    console.log('Starting Next.js dev server...');
+    await sandbox.process.executeCommand('cd /workspace && nohup npm run dev > /tmp/next.log 2>&1 &');
 
     // Wait for server to be ready
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 12000));
 
-    // Get public URL
-    const url = await sandbox.getUrl(3000);
+    // Get the preview URL
+    const previewLink = await sandbox.getPreviewLink(3000);
+    const url = previewLink.url;
     console.log('Public URL:', url);
 
     // Update project with new sandbox URL

@@ -633,12 +633,41 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
       await sandbox.fs.uploadFile(Buffer.from(globalsCss), '/workspace/app/globals.css');
       await sandbox.fs.uploadFile(Buffer.from(layoutTsx), '/workspace/app/layout.tsx');
       
-      // Upload all generated files
+      // Upload all generated files (with validation)
       console.log(`Uploading ${filesData.files.length} generated files...`);
       for (const file of filesData.files) {
         const filePath = `/workspace/${file.path}`;
+        let content = file.content;
+        
+        // CRITICAL: Final validation before upload - check if content is still JSON
+        if (content.trim().startsWith('{') && (content.includes('"files"') || content.includes('"path"'))) {
+          console.error(`❌ CRITICAL: File ${file.path} still contains JSON structure!`);
+          console.log('🔧 Attempting emergency extraction...');
+          
+          try {
+            const emergency = JSON.parse(content);
+            if (emergency.files && emergency.files[0]) {
+              content = emergency.files[0].content;
+              console.log('✅ Emergency extraction successful');
+            }
+          } catch (e) {
+            // Regex fallback
+            const match = content.match(/"content":\s*"((?:[^"\\]|\\[\s\S])*)"/);
+            if (match) {
+              content = match[1]
+                .replace(/\\n/g, '\n')
+                .replace(/\\t/g, '\t')
+                .replace(/\\"/g, '"')
+                .replace(/\\\\/g, '\\');
+              console.log('✅ Emergency regex extraction successful');
+            } else {
+              console.error('❌ Emergency extraction failed - uploading as-is and relying on preflight');
+            }
+          }
+        }
+        
         console.log(`Uploading: ${filePath}`);
-        await sandbox.fs.uploadFile(Buffer.from(file.content), filePath);
+        await sandbox.fs.uploadFile(Buffer.from(content), filePath);
       }
 
       // Install dependencies
@@ -673,11 +702,16 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
         const hasTsErrors = tsErrors.includes('error TS');
         const hasSyntaxErrors = tsErrors.includes('Syntax Error') || lintErrors.includes('Syntax Error');
         const hasMissingImports = tsErrors.includes('Cannot find module') || tsErrors.includes('Module not found');
+        const hasJsonError = tsErrors.includes('"files"') || tsErrors.includes('Expected');
         
-        if (!hasTsErrors && !hasSyntaxErrors && !hasMissingImports) {
+        if (!hasTsErrors && !hasSyntaxErrors && !hasMissingImports && !hasJsonError) {
           console.log('✅ Preflight checks passed!');
           hasErrors = false;
           break;
+        }
+        
+        if (hasJsonError) {
+          console.error('🚨 JSON structure detected in code file!');
         }
         
         if (debugAttempts >= MAX_DEBUG_ATTEMPTS) {

@@ -599,6 +599,7 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
     const sandbox = await daytona.create({
       image: 'node:20-alpine',
       public: true,
+      ephemeral: true,
       envVars: {
         NODE_ENV: 'development'
       }

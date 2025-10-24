@@ -87,8 +87,7 @@ export async function POST(
     if (project.sandbox_id) {
       try {
         console.log(`Cleaning up old sandbox: ${project.sandbox_id}`);
-        const oldSandbox = await daytona.get(project.sandbox_id);
-        await oldSandbox.remove();
+        await daytona.remove(project.sandbox_id);
         console.log('Old sandbox removed successfully');
       } catch (cleanupError) {
         console.warn('Could not remove old sandbox (might already be deleted):', cleanupError);
@@ -100,6 +99,7 @@ export async function POST(
     console.log('Creating fresh sandbox...');
     const sandbox = await daytona.create({
       image: 'node:20-alpine',
+      ephemeral: true,
       public: true,
       envVars: {
         NODE_ENV: 'development'

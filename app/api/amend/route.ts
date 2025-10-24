@@ -82,7 +82,7 @@ export async function POST(req: Request) {
       messages: [
         {
           role: "system",
-          content: `You are an ELITE Next.js developer making targeted improvements to existing code.
+          content: `You are an ELITE Next.js developer making targeted improvements to existing code while ensuring code is valid..
 
 **YOUR TASK**: Apply the user's requested changes to the existing codebase WITHOUT rewriting everything.
 

@@ -810,17 +810,125 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
       // Wait for server to start and check logs
       await new Promise(resolve => setTimeout(resolve, 12000));
       
-      // Check if server started successfully
-      try {
-        const logs = await sandbox.process.executeCommand('tail -n 50 /tmp/next.log');
-        console.log('Next.js logs:', logs.result);
+      // Check if server started successfully and auto-fix errors
+      let buildAttempts = 0;
+      const MAX_BUILD_ATTEMPTS = 2;
+      let hasCompileErrors = true;
+      
+      while (hasCompileErrors && buildAttempts < MAX_BUILD_ATTEMPTS) {
+        buildAttempts++;
+        console.log(`Build validation attempt ${buildAttempts}/${MAX_BUILD_ATTEMPTS}`);
         
-        if (logs.result?.includes('Error:') || logs.result?.includes('Failed to compile')) {
-          console.error('Next.js compilation errors detected');
-          // Still return URL, user can see errors in preview
+        try {
+          const logs = await sandbox.process.executeCommand('tail -n 100 /tmp/next.log');
+          const logContent = logs.result || '';
+          console.log('Next.js logs:', logContent.substring(0, 500));
+          
+          // Check for compilation errors
+          const hasErrors = logContent.includes('Error:') || 
+                           logContent.includes('Failed to compile') ||
+                           logContent.includes('Module not found') ||
+                           logContent.includes("Can't resolve");
+          
+          if (!hasErrors || buildAttempts >= MAX_BUILD_ATTEMPTS) {
+            hasCompileErrors = false;
+            if (!hasErrors) {
+              console.log('✅ Build successful!');
+            } else {
+              console.warn('⚠️ Build errors persist, but proceeding');
+            }
+            break;
+          }
+          
+          // Extract error details
+          console.error('🚨 Build errors detected, attempting auto-fix...');
+          
+          // Use AI to fix the errors
+          const fixCompletion = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "system",
+                content: `You are a Next.js debugging expert. Fix ONLY the specific errors shown in the build log.
+
+**CRITICAL RULES**:
+1. Read the error message carefully
+2. If it's "Module not found" or "Can't resolve", the file is missing or the import path is wrong
+3. For missing files: Create them with minimal valid content
+4. For wrong paths: Fix the import statement
+5. Return ONLY files that need to be fixed or created
+6. Keep fixes minimal - don't rewrite working code
+
+Return JSON:
+\`\`\`json
+{
+  "files": [
+    {
+      "path": "app/components/MissingFile.tsx",
+      "content": "... minimal valid component ..."
+    }
+  ]
+}
+\`\`\``
+              },
+              {
+                role: "user",
+                content: `Build errors:\n\`\`\`\n${logContent.substring(0, 2000)}\n\`\`\`\n\nFix ONLY these specific errors. Return JSON with files array.`
+              }
+            ],
+            temperature: 0.3,
+            max_tokens: 4096,
+          });
+          
+          const fixResponse = fixCompletion.choices[0]?.message?.content || '';
+          tokensUsed += fixCompletion.usage?.total_tokens || 0;
+          
+          let fixData: { files: Array<{ path: string; content: string }> };
+          try {
+            const cleaned = fixResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+            fixData = JSON.parse(cleaned);
+            
+            if (fixData.files && fixData.files.length > 0) {
+              console.log(`🔧 Applying ${fixData.files.length} fixes...`);
+              
+              for (const file of fixData.files) {
+                let content = file.content;
+                
+                // Ensure 'use client' for components
+                if ((file.path.endsWith('.tsx') || file.path.endsWith('.jsx')) && 
+                    !content.trim().startsWith("'use client'") && 
+                    !content.trim().startsWith('"use client"')) {
+                  content = "'use client'\n\n" + content;
+                }
+                
+                await sandbox.fs.uploadFile(Buffer.from(content), `/workspace/${file.path}`);
+                console.log(`Fixed: ${file.path}`);
+              }
+              
+              // Restart server
+              await sandbox.process.executeCommand('cd /workspace && pkill -9 node || true');
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              await sandbox.process.executeCommand('cd /workspace && nohup npm run dev > /tmp/next.log 2>&1 &');
+              await new Promise(resolve => setTimeout(resolve, 12000));
+              
+              // Update allFiles with fixes
+              for (const fixedFile of fixData.files) {
+                const existingIndex = allFiles.findIndex(f => f.path === fixedFile.path);
+                if (existingIndex >= 0) {
+                  allFiles[existingIndex].content = fixedFile.content;
+                } else {
+                  allFiles.push(fixedFile);
+                }
+              }
+            }
+          } catch (parseError) {
+            console.error('Could not parse AI fix response:', parseError);
+            break;
+          }
+        } catch (logError) {
+          console.warn('Could not read logs:', logError);
+          break;
         }
-      } catch (logError) {
-        console.warn('Could not read logs:', logError);
       }
 
       // Get the correct preview URL from Daytona

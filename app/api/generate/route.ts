@@ -805,6 +805,24 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
     
     // Log failed generation if we have a user session
     try {
+      const cookieStore = await cookies();
+      const supabase = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID 
+          ? `https://${process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID}.supabase.co`
+          : 'https://placeholder.supabase.co',
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC || 'placeholder-key',
+        {
+          cookies: {
+            getAll() { return cookieStore.getAll() },
+            setAll(cookiesToSet) {
+              cookiesToSet.forEach(({ name, value, options }) =>
+                cookieStore.set(name, value, options)
+              )
+            },
+          },
+        }
+      );
+      
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
         const duration = Date.now() - startTime;

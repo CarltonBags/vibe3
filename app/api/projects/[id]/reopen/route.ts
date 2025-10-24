@@ -148,8 +148,19 @@ export async function POST(
 
   } catch (error) {
     console.error('Error reopening project:', error);
+    
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    
+    // Check for specific Daytona errors
+    if (errorMessage.includes('No available runners')) {
+      return NextResponse.json(
+        { error: 'Daytona has no available compute resources right now. Please try again in a few minutes or contact support.' },
+        { status: 503 } // Service Unavailable
+      );
+    }
+    
     return NextResponse.json(
-      { error: 'Failed to reopen project' },
+      { error: 'Failed to reopen project', details: errorMessage },
       { status: 500 }
     );
   }

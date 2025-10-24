@@ -5,8 +5,6 @@ import { useUserUsage } from '@/lib/hooks/useUserUsage'
 export default function UsageIndicator() {
   const { usage, loading } = useUserUsage()
 
-  console.log('UsageIndicator: loading=', loading, 'usage=', usage)
-
   // Show loading skeleton
   if (loading) {
     return (
@@ -23,11 +21,8 @@ export default function UsageIndicator() {
   }
 
   if (!usage) {
-    console.log('UsageIndicator: No usage data available')
     return null
   }
-
-  console.log('UsageIndicator: Rendering with usage:', usage)
 
   const generationsPercent = (usage.generationsUsed / usage.generationsLimit) * 100
   const isLow = generationsPercent >= 80

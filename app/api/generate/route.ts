@@ -3,7 +3,9 @@ import { NextResponse } from 'next/server';
 import { OpenAI } from 'openai';
 import fs from 'fs';
 import path from 'path';
-import { supabase } from '@/lib/supabase';
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { supabaseAdmin } from '@/lib/supabase';
 import { 
   checkUserLimits, 
   incrementUsage, 
@@ -33,8 +35,31 @@ export async function POST(req: Request) {
       );
     }
 
-    // Get authenticated user
+    // Get authenticated user from cookies
+    const cookieStore = await cookies();
+    
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID 
+        ? `https://${process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID}.supabase.co`
+        : 'https://placeholder.supabase.co',
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC || 'placeholder-key',
+      {
+        cookies: {
+          getAll() {
+            return cookieStore.getAll()
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            )
+          },
+        },
+      }
+    )
+
     const { data: { session } } = await supabase.auth.getSession();
+    console.log('Generate API: Session check:', session ? 'Authenticated' : 'Not authenticated');
+    
     if (!session) {
       return NextResponse.json(
         { error: 'Unauthorized - Please sign in' },
@@ -43,6 +68,7 @@ export async function POST(req: Request) {
     }
 
     const userId = session.user.id;
+    console.log('Generate API: User:', userId);
 
     // Check user limits
     const limits = await checkUserLimits(userId);

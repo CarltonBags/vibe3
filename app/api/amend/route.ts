@@ -92,6 +92,8 @@ export async function POST(req: Request) {
 3. Preserve existing components, styling, and structure unless specifically asked to change them
 4. Make surgical, precise edits - don't rebuild from scratch
 5. Maintain code quality and consistency with the existing codebase
+6. **NEVER MODIFY THESE CORE FILES**: app/layout.tsx, app/globals.css, package.json, next.config.js, tailwind.config.js, tsconfig.json
+7. Only modify user-facing files: app/page.tsx, app/components/*.tsx, app/types/*.ts, app/utils/*.ts
 
 **OUTPUT FORMAT**:
 Return a JSON object with ONLY the files that need to be modified:
@@ -169,6 +171,37 @@ Generate ONLY the files that need to change. Return JSON with files array and su
       }));
 
       console.log(`AI generated ${amendmentData.files.length} file updates`);
+
+      // Validate: reject modifications to core template files
+      const forbiddenFiles = [
+        'app/layout.tsx',
+        'app/globals.css',
+        'package.json',
+        'next.config.js',
+        'tailwind.config.js',
+        'postcss.config.js',
+        'tsconfig.json'
+      ];
+
+      const invalidFiles = amendmentData.files.filter(f => 
+        forbiddenFiles.includes(f.path)
+      );
+
+      if (invalidFiles.length > 0) {
+        console.warn(`AI tried to modify forbidden files: ${invalidFiles.map(f => f.path).join(', ')}`);
+        // Filter them out instead of rejecting the entire request
+        amendmentData.files = amendmentData.files.filter(f => 
+          !forbiddenFiles.includes(f.path)
+        );
+        console.log(`Filtered to ${amendmentData.files.length} valid file updates`);
+      }
+
+      if (amendmentData.files.length === 0) {
+        return NextResponse.json({
+          success: false,
+          error: 'No valid files to modify. Core template files cannot be changed.'
+        }, { status: 400 });
+      }
       
     } catch (parseError) {
       console.error('Failed to parse AI amendment response:', parseError);

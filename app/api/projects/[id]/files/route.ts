@@ -5,9 +5,12 @@ import { supabaseAdmin } from '@/lib/supabase'
 
 export async function GET(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    // Await params (Next.js 15+ requirement)
+    const { id: projectId } = await params;
+    
     // Get authenticated user
     const cookieStore = await cookies()
     
@@ -40,7 +43,6 @@ export async function GET(
     }
 
     const userId = session.user.id
-    const projectId = params.id
 
     // Verify project belongs to user
     const { data: project, error: projectError } = await supabaseAdmin

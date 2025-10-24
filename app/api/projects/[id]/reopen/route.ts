@@ -8,9 +8,12 @@ import path from 'path';
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    // Await params (Next.js 15+ requirement)
+    const { id: projectId } = await params;
+    
     // Get authenticated user
     const cookieStore = await cookies();
     
@@ -43,7 +46,6 @@ export async function POST(
     }
 
     const userId = session.user.id;
-    const projectId = params.id;
 
     // Get project from database
     const { data: project, error: projectError } = await supabaseAdmin

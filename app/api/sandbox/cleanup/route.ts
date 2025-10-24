@@ -66,8 +66,14 @@ export async function POST(req: Request) {
       apiUrl: process.env.DAYTONA_URL || 'https://api.daytona.io',
     });
 
-    await daytona.remove(sandboxId);
-    console.log(`Sandbox ${sandboxId} cleaned up successfully`);
+    try {
+      const sandbox = await daytona.get(sandboxId);
+      await sandbox.remove();
+      console.log(`Sandbox ${sandboxId} cleaned up successfully`);
+    } catch (err) {
+      console.warn(`Sandbox ${sandboxId} might already be deleted:`, err);
+      // Continue anyway - sandbox is gone either way
+    }
 
     // Update project to clear sandbox_id (optional, for tracking)
     await supabaseAdmin

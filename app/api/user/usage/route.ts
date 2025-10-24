@@ -91,7 +91,7 @@ export async function GET(request: Request) {
       console.error('Usage API: Error fetching project count:', projectError)
     }
 
-    const generationsUsed = usageData?.generations_count || 0
+    const generationsUsed = usageData?.generations_used || 0
     const tokensUsed = usageData?.tokens_used || 0
     const generationsLimit = userWithTier.tier.max_generations_per_month
     const projectsLimit = userWithTier.tier.max_projects

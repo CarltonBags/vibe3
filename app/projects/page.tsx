@@ -216,7 +216,7 @@ export default function Projects() {
                     </button>
                     {project.sandbox_url && (
                       <button
-                        onClick={() => window.open(project.sandbox_url, '_blank')}
+                        onClick={() => project.sandbox_url && window.open(project.sandbox_url, '_blank')}
                         className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium transition-colors"
                         title="Open current sandbox"
                       >

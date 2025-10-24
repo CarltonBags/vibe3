@@ -136,6 +136,10 @@ export async function POST(
     // Upload saved project files
     console.log(`Uploading ${files.length} saved files...`);
     for (const file of files) {
+      if (!file.content) {
+        console.warn(`Skipping file with no content: ${file.file_path}`);
+        continue;
+      }
       const filePath = `/workspace/${file.file_path}`;
       console.log(`Uploading: ${filePath}`);
       await sandbox.fs.uploadFile(Buffer.from(file.content), filePath);
@@ -157,10 +161,11 @@ export async function POST(
     const url = previewLink.url;
     console.log('Public URL:', url);
 
-    // Update project with new sandbox URL
+    // Update project with new sandbox info
     await supabaseAdmin
       .from('projects')
       .update({
+        sandbox_id: sandbox.id,
         sandbox_url: url,
         updated_at: new Date().toISOString()
       })
@@ -178,8 +183,8 @@ export async function POST(
       // If setup fails, clean up the sandbox
       console.error('Failed to set up sandbox, cleaning up...', execError);
       try {
-        // Use the sandbox object directly (same pattern as old sandbox cleanup)
-        await sandbox.remove();
+        const failedSandbox = await daytona.get(sandbox.id);
+        await failedSandbox.remove();
         console.log('Failed sandbox cleaned up successfully');
       } catch (cleanupErr) {
         console.warn('Could not cleanup failed sandbox:', cleanupErr);

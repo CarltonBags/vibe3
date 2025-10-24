@@ -2,18 +2,50 @@
 
 import { useAuth } from '@/lib/auth-context'
 import { useRouter } from 'next/navigation'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import UserMenu from '../components/UserMenu'
+
+interface Project {
+  id: string
+  name: string
+  description: string | null
+  prompt: string
+  sandbox_url: string | null
+  created_at: string
+  updated_at: string
+}
 
 export default function Projects() {
   const { user, loading: authLoading } = useAuth()
   const router = useRouter()
+  const [projects, setProjects] = useState<Project[]>([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!authLoading && !user) {
       router.push('/')
     }
   }, [user, authLoading, router])
+
+  useEffect(() => {
+    if (user) {
+      fetchProjects()
+    }
+  }, [user])
+
+  const fetchProjects = async () => {
+    try {
+      const res = await fetch('/api/projects')
+      if (res.ok) {
+        const data = await res.json()
+        setProjects(data.projects)
+      }
+    } catch (error) {
+      console.error('Error fetching projects:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   if (authLoading || !user) {
     return (
@@ -55,64 +87,104 @@ export default function Projects() {
           </button>
         </div>
 
-        {/* Coming Soon State */}
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-12 text-center">
-          <div className="w-20 h-20 bg-purple-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
-            <svg className="w-10 h-10 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-            </svg>
+        {/* Loading State */}
+        {loading && (
+          <div className="flex items-center justify-center py-20">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
           </div>
-          <h2 className="text-2xl font-bold mb-4">Projects View Coming Soon</h2>
-          <p className="text-gray-400 mb-8 max-w-md mx-auto">
-            We're building a beautiful project gallery where you'll be able to view, manage, and share all your generated websites.
-          </p>
-          <div className="space-y-4 max-w-md mx-auto text-left">
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-green-500/20 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <div>
-                <p className="font-medium">Project History</p>
-                <p className="text-sm text-gray-500">View all your generated websites in one place</p>
-              </div>
+        )}
+
+        {/* Empty State */}
+        {!loading && projects.length === 0 && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-12 text-center">
+            <div className="w-20 h-20 bg-purple-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg className="w-10 h-10 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
             </div>
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-green-500/20 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <div>
-                <p className="font-medium">Quick Preview</p>
-                <p className="text-sm text-gray-500">Preview any project without re-creating it</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-green-500/20 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <div>
-                <p className="font-medium">Easy Management</p>
-                <p className="text-sm text-gray-500">Delete, rename, and organize your projects</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 bg-green-500/20 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <div>
-                <p className="font-medium">GitHub Integration</p>
-                <p className="text-sm text-gray-500">Export to GitHub with one click (Pro+)</p>
-              </div>
-            </div>
+            <h2 className="text-2xl font-bold mb-4">No Projects Yet</h2>
+            <p className="text-gray-400 mb-8 max-w-md mx-auto">
+              Start creating amazing websites with AI. Click "New Project" to get started!
+            </p>
+            <button
+              onClick={() => router.push('/')}
+              className="px-8 py-3 rounded-lg font-medium transition-all inline-block"
+              style={{
+                backgroundImage: 'url(/vibe_gradient.png)',
+                backgroundSize: 'cover',
+                backgroundPosition: 'center'
+              }}
+            >
+              <span className="text-white drop-shadow-lg">Create Your First Project</span>
+            </button>
           </div>
-        </div>
+        )}
+
+        {/* Projects Grid */}
+        {!loading && projects.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {projects.map((project) => (
+              <div
+                key={project.id}
+                className="bg-zinc-900 border border-zinc-800 hover:border-purple-500 rounded-xl overflow-hidden transition-all group"
+              >
+                {/* Project Preview */}
+                <div className="aspect-video bg-zinc-800 flex items-center justify-center relative overflow-hidden">
+                  {project.sandbox_url ? (
+                    <iframe
+                      src={`/api/proxy?url=${encodeURIComponent(project.sandbox_url)}`}
+                      className="w-full h-full"
+                      title={project.name}
+                    />
+                  ) : (
+                    <svg className="w-12 h-12 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                    </svg>
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
+
+                {/* Project Info */}
+                <div className="p-6">
+                  <h3 className="text-lg font-bold mb-2 truncate">{project.name}</h3>
+                  <p className="text-sm text-gray-400 mb-4 line-clamp-2">
+                    {project.description || project.prompt}
+                  </p>
+                  
+                  {/* Meta */}
+                  <div className="flex items-center justify-between text-xs text-gray-500 mb-4">
+                    <span>{new Date(project.created_at).toLocaleDateString()}</span>
+                    {project.sandbox_url && (
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                        Live
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex gap-2">
+                    {project.sandbox_url && (
+                      <button
+                        onClick={() => window.open(project.sandbox_url, '_blank')}
+                        className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-sm font-medium transition-colors"
+                      >
+                        View Live
+                      </button>
+                    )}
+                    <button
+                      className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

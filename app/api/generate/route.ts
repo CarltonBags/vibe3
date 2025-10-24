@@ -103,17 +103,19 @@ export async function POST(req: Request) {
       messages: [
         {
           role: "system",
-          content: `You are an ELITE Next.js developer and UI/UX designer. Your task is to generate a COMPLETE, PRODUCTION-READY, VISUALLY STUNNING web application.
+          content: `You are an ELITE Next.js developer and UI/UX designer. Your task is to generate a FUNCTIONAL, COMPLETE, PRODUCTION-READY, VISUALLY STUNNING web application.
 
 🎯 YOUR MISSION:
 Create a fully functional, interactive, BEAUTIFUL web application based on the user's requirements.
 
 ⚠️ **CRITICAL - USER REQUIREMENTS TAKE ABSOLUTE PRIORITY**:
+- the application MUST compile without errors. Create every component that you import elsewhere.
 - If the user provides SPECIFIC DETAILS about structure, layout, components, or features, YOU MUST FOLLOW THEM EXACTLY
 - User's instructions override ALL generic guidelines below
 - Only use generic structure to FILL IN gaps where the user was unspecific
 - The more detailed the user's request, the more their structure must be respected
 - Think: "What did the user explicitly ask for?" → Implement that FIRST and FOREMOST
+- The application must be functional and complete, with all the features and components the user requested
 
 📋 OUTPUT FORMAT - **CRITICAL**:
 
@@ -133,6 +135,7 @@ You MUST return a JSON object with this EXACT structure:
 }
 \`\`\`
 
+**CRITICAL**: If you import ANY component in app/page.tsx, you MUST create that component file in app/components/
 📋 CODE REQUIREMENTS:
 
 1. **Multiple Files**: Generate 3-8 files depending on complexity:
@@ -499,7 +502,7 @@ export default function Page() {
 - Make it look like a $50,000 professional website
 - Users expect to be AMAZED!
 - **MANDATORY**: Every component you import MUST exist as a file in app/components/
-- **NO EXCEPTIONS**: If you write \`import FeatureCard from './components/FeatureCard'\`, you MUST create app/components/FeatureCard.tsx
+- **NO EXCEPTIONS**: If you write import FeatureCard from './components/FeatureCard', you MUST create app/components/FeatureCard.tsx`
         },
         {
           role: "user",
@@ -569,18 +572,29 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
       // Validate that all imports have corresponding files
       const pageFile = filesData.files.find(f => f.path === 'app/page.tsx');
       if (pageFile) {
-        const importMatches = pageFile.content.match(/import\s+\w+\s+from\s+['"]\.\/components\/(\w+)['"]/g);
-        if (importMatches) {
+        console.log('🔍 Checking for component imports in page.tsx...');
+        
+        // More comprehensive regex to catch all import patterns
+        const importMatches = pageFile.content.match(/import\s+[\w\s,{}]+\s+from\s+['"]\.\/components\/(\w+)['"]/g);
+        console.log('Found import matches:', importMatches);
+        
+        if (importMatches && importMatches.length > 0) {
           const importedComponents = importMatches.map(match => {
-            const componentMatch = match.match(/import\s+\w+\s+from\s+['"]\.\/components\/(\w+)['"]/);
+            const componentMatch = match.match(/import\s+[\w\s,{}]+\s+from\s+['"]\.\/components\/(\w+)['"]/);
             return componentMatch ? componentMatch[1] : null;
           }).filter((comp): comp is string => comp !== null);
+          
+          console.log('Imported components:', importedComponents);
           
           const existingComponents = filesData.files
             .filter(f => f.path.startsWith('app/components/'))
             .map(f => f.path.replace('app/components/', '').replace('.tsx', ''));
           
+          console.log('Existing components:', existingComponents);
+          
           const missingComponents = importedComponents.filter(comp => !existingComponents.includes(comp));
+          
+          console.log('Missing components:', missingComponents);
           
           if (missingComponents.length > 0) {
             console.warn(`⚠️ Missing components detected: ${missingComponents.join(', ')}`);
@@ -610,8 +624,14 @@ export default function ${componentName}({}: Props) {
             }
             
             console.log(`✅ Created ${missingComponents.length} missing components`);
+          } else {
+            console.log('✅ All imported components exist');
           }
+        } else {
+          console.log('No component imports found in page.tsx');
         }
+      } else {
+        console.log('No page.tsx file found');
       }
       
     } catch (parseError) {

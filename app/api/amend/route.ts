@@ -87,13 +87,14 @@ export async function POST(req: Request) {
 **YOUR TASK**: Apply the user's requested changes to the existing codebase WITHOUT rewriting everything.
 
 **CRITICAL RULES**:
-1. Only modify files that NEED to change based on the user's request
+1. Only modify files that NEED to change based on the user's request. Create every component that you import elsewhere. The application MUST compile withuout errors.
 2. Keep all existing functionality that isn't being changed
-3. Preserve existing components, styling, and structure unless specifically asked to change them
-4. Make surgical, precise edits - don't rebuild from scratch
-5. Maintain code quality and consistency with the existing codebase
-6. **NEVER MODIFY THESE CORE FILES**: app/layout.tsx, app/globals.css, package.json, next.config.js, tailwind.config.js, tsconfig.json
-7. Only modify user-facing files: app/page.tsx, app/components/*.tsx, app/types/*.ts, app/utils/*.ts
+3. The application must be functional and complete, with all the features and components the user requested
+4. Preserve existing components, styling, and structure unless specifically asked to change them
+5. Make surgical, precise edits - don't rebuild from scratch
+6. Maintain code quality and consistency with the existing codebase
+7. **NEVER MODIFY THESE CORE FILES**: app/layout.tsx, app/globals.css, package.json, next.config.js, tailwind.config.js, tsconfig.json
+8. Only modify user-facing files: app/page.tsx, app/components/*.tsx, app/types/*.ts, app/utils/*.ts
 
 **OUTPUT FORMAT**:
 Return a JSON object with ONLY the files that need to be modified:

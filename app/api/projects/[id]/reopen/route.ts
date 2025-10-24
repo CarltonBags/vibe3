@@ -113,10 +113,27 @@ export async function POST(
       const layoutTsx = fs.readFileSync(path.join(templatesPath, 'app/layout.tsx'), 'utf-8');
 
       // Create project structure in sandbox
-      await sandbox.fs.createFolder('/workspace/app', '755');
-      await sandbox.fs.createFolder('/workspace/app/components', '755');
-      await sandbox.fs.createFolder('/workspace/app/types', '755');
-      await sandbox.fs.createFolder('/workspace/app/utils', '755');
+      // Try to create folders, ignore errors if they already exist
+      try {
+        await sandbox.fs.createFolder('/workspace/app', '755');
+      } catch (e) {
+        console.log('Folder /workspace/app might already exist, continuing...');
+      }
+      try {
+        await sandbox.fs.createFolder('/workspace/app/components', '755');
+      } catch (e) {
+        console.log('Folder /workspace/app/components might already exist, continuing...');
+      }
+      try {
+        await sandbox.fs.createFolder('/workspace/app/types', '755');
+      } catch (e) {
+        console.log('Folder /workspace/app/types might already exist, continuing...');
+      }
+      try {
+        await sandbox.fs.createFolder('/workspace/app/utils', '755');
+      } catch (e) {
+        console.log('Folder /workspace/app/utils might already exist, continuing...');
+      }
     
     // Write configuration files
     await sandbox.fs.uploadFile(Buffer.from(packageJson), '/workspace/package.json');
@@ -172,7 +189,9 @@ export async function POST(
       // If setup fails, clean up the sandbox
       console.error('Failed to set up sandbox, cleaning up...', execError);
       try {
-        await sandbox.remove();
+        const sandboxToRemove = await daytona.get(sandbox.id);
+        await sandboxToRemove.remove();
+        console.log('Failed sandbox cleaned up successfully');
       } catch (cleanupErr) {
         console.warn('Could not cleanup failed sandbox:', cleanupErr);
       }

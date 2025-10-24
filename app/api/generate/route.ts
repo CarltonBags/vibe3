@@ -92,7 +92,8 @@ export async function POST(req: Request) {
       );
     }
 
-    const maxTokens = userWithTier.tier.max_tokens_per_generation;
+    // Cap at model's maximum (gpt-4o-mini supports max 16384 completion tokens)
+    const maxTokens = Math.min(userWithTier.tier.max_tokens_per_generation, 16384);
 
     // Step 1: Generate Next.js project structure using OpenAI
     // Using gpt-4o-mini for cost efficiency (~98% cheaper than gpt-4)

@@ -80,11 +80,30 @@ export async function POST(
     // Initialize Daytona
     const daytona = new Daytona({
       apiKey: process.env.DAYTONA_KEY || '',
-      target: process.env.DAYTONA_URL || '',
+      apiUrl: process.env.DAYTONA_URL || 'https://api.daytona.io',
     });
 
+    // Clean up old sandbox if it exists (to free up runner capacity)
+    if (project.sandbox_id) {
+      try {
+        console.log(`Cleaning up old sandbox: ${project.sandbox_id}`);
+        await daytona.remove(project.sandbox_id);
+        console.log('Old sandbox removed successfully');
+      } catch (cleanupError) {
+        console.warn('Could not remove old sandbox (might already be deleted):', cleanupError);
+        // Continue anyway - old sandbox might already be gone
+      }
+    }
+
     // Create new sandbox
-    const sandbox = await daytona.create();
+    console.log('Creating fresh sandbox...');
+    const sandbox = await daytona.create({
+      image: 'node:20-alpine',
+      public: true,
+      envVars: {
+        NODE_ENV: 'development'
+      }
+    });
     console.log('Sandbox created:', sandbox.id);
 
     // Upload template files (package.json, etc.)

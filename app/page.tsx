@@ -30,7 +30,9 @@ export default function Home() {
   const { user, loading: authLoading } = useAuth()
   const searchParams = useSearchParams()
   const [prompt, setPrompt] = useState('')
+  const [amendmentPrompt, setAmendmentPrompt] = useState('')
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isAmending, setIsAmending] = useState(false)
   const [hasGenerated, setHasGenerated] = useState(false)
   const [sandboxData, setSandboxData] = useState<SandboxResponse | null>(null)
   const [progress, setProgress] = useState('')
@@ -38,6 +40,7 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>('preview')
   const [selectedFile, setSelectedFile] = useState<string>('app/page.tsx')
   const [showAuthModal, setShowAuthModal] = useState(false)
+  const [amendmentHistory, setAmendmentHistory] = useState<string[]>([])
   const hasStartedRef = useRef(false)
 
   // Cleanup sandbox when user navigates away or closes tab
@@ -193,15 +196,74 @@ export default function Home() {
 
   const handleReset = () => {
     setPrompt('')
+    setAmendmentPrompt('')
     setHasGenerated(false)
     setSandboxData(null)
     setProgress('')
     setError('')
+    setAmendmentHistory([])
     hasStartedRef.current = false
     
     // Clear URL params if any
     if (typeof window !== 'undefined') {
       window.history.replaceState({}, '', '/')
+    }
+  }
+
+  const handleAmendment = async (e: React.FormEvent) => {
+    e.preventDefault()
+    
+    if (!amendmentPrompt.trim() || !sandboxData || isAmending) {
+      return
+    }
+
+    setIsAmending(true)
+    setError('')
+    setProgress('🔧 Processing your changes...')
+
+    try {
+      const response = await fetch('/api/amend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amendmentPrompt: amendmentPrompt.trim(),
+          sandboxId: sandboxData.sandboxId,
+          projectId: searchParams.get('projectId'),
+          currentFiles: sandboxData.files
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to apply amendments')
+      }
+
+      if (data.success) {
+        // Update sandbox data with new files
+        setSandboxData({
+          ...sandboxData,
+          files: data.files,
+          url: data.url
+        })
+
+        // Add to history
+        setAmendmentHistory(prev => [...prev, amendmentPrompt])
+        
+        // Clear amendment input
+        setAmendmentPrompt('')
+        setProgress(`✨ ${data.summary}`)
+        
+        // Clear success message after a few seconds
+        setTimeout(() => {
+          setProgress('')
+        }, 3000)
+      }
+    } catch (err) {
+      console.error('Amendment error:', err)
+      setError(err instanceof Error ? err.message : 'Failed to apply changes')
+    } finally {
+      setIsAmending(false)
     }
   }
 
@@ -271,17 +333,18 @@ export default function Home() {
               </h1>
             )}
             
-            <form onSubmit={handleSubmit} className="relative mb-6">
-              <div className="input-container">
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  rows={hasGenerated ? 2 : 3}
-                  disabled={hasGenerated}
-                  className="w-full p-4 bg-transparent outline-none resize-none placeholder-gray-400 disabled:opacity-50"
-                  placeholder="Describe what you want to build (e.g., 'Create a tic-tac-toe game' or 'Build a todo app')..."
-                />
-                {!hasGenerated && (
+            {/* Initial Generation Form */}
+            {!hasGenerated && (
+              <form onSubmit={handleSubmit} className="relative mb-6">
+                <div className="input-container">
+                  <textarea
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    rows={3}
+                    disabled={isGenerating}
+                    className="w-full p-4 bg-transparent outline-none resize-none placeholder-gray-400 disabled:opacity-50"
+                    placeholder="Describe what you want to build (e.g., 'Create a tic-tac-toe game' or 'Build a todo app')..."
+                  />
                   <button
                     type="submit"
                     disabled={!prompt.trim() || isGenerating}
@@ -306,13 +369,75 @@ export default function Home() {
                       <path d="M12 19V5M5 12l7-7 7 7" />
                     </svg>
                   </button>
+                </div>
+              </form>
+            )}
+
+            {/* Amendment Form (shown after generation) */}
+            {hasGenerated && !isGenerating && (
+              <div className="space-y-4 mb-6">
+                <div className="bg-gray-800/30 rounded-lg p-3 border border-gray-700">
+                  <p className="text-xs text-gray-400 mb-1">Original prompt:</p>
+                  <p className="text-sm text-gray-300">{prompt}</p>
+                </div>
+                
+                <form onSubmit={handleAmendment} className="relative">
+                  <div className="input-container">
+                    <textarea
+                      value={amendmentPrompt}
+                      onChange={(e) => setAmendmentPrompt(e.target.value)}
+                      rows={3}
+                      disabled={isAmending}
+                      className="w-full p-4 bg-transparent outline-none resize-none placeholder-gray-400 disabled:opacity-50"
+                      placeholder="Request changes (e.g., 'Make the button bigger' or 'Add a contact form')..."
+                    />
+                    <button
+                      type="submit"
+                      disabled={!amendmentPrompt.trim() || isAmending}
+                      className="submit-arrow disabled:opacity-50 disabled:cursor-not-allowed"
+                      aria-label="Apply Changes"
+                      style={{
+                        backgroundImage: 'url(/vibe_gradient.png)',
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center'
+                      }}
+                    >
+                      <svg 
+                        xmlns="http://www.w3.org/2000/svg" 
+                        viewBox="0 0 24 24" 
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="w-5 h-5"
+                      >
+                        <path d="M12 19V5M5 12l7-7 7 7" />
+                      </svg>
+                    </button>
+                  </div>
+                </form>
+
+                {/* Amendment History */}
+                {amendmentHistory.length > 0 && (
+                  <div className="bg-gray-800/20 rounded-lg p-3 border border-gray-700/50">
+                    <p className="text-xs text-gray-500 mb-2">Changes made:</p>
+                    <div className="space-y-1 max-h-32 overflow-y-auto">
+                      {amendmentHistory.map((change, idx) => (
+                        <div key={idx} className="flex items-start gap-2">
+                          <span className="text-purple-400 text-xs mt-0.5">✓</span>
+                          <p className="text-xs text-gray-400 flex-1">{change}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
-            </form>
+            )}
 
             {hasGenerated && (
               <div className="space-y-4">
-                {isGenerating && (
+                {(isGenerating || isAmending) && (
                   <div className="space-y-4">
                     <div className="flex items-center space-x-3">
                       <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-500"></div>
@@ -345,12 +470,19 @@ export default function Home() {
                   </div>
                 )}
 
-                {!isGenerating && sandboxData && (
+                {!isGenerating && !isAmending && sandboxData && (
                   <div className="space-y-3">
-                    <div className="bg-green-500/20 border border-green-500/50 rounded-lg p-4">
-                      <p className="text-green-400 text-sm font-medium">✓ Website is live!</p>
-                      <p className="text-gray-400 text-xs mt-1">Sandbox: {sandboxData.sandboxId}</p>
-                    </div>
+                    {progress && !error && (
+                      <div className="bg-green-500/20 border border-green-500/50 rounded-lg p-4">
+                        <p className="text-green-400 text-sm font-medium">{progress}</p>
+                      </div>
+                    )}
+                    {!progress && (
+                      <div className="bg-green-500/20 border border-green-500/50 rounded-lg p-4">
+                        <p className="text-green-400 text-sm font-medium">✓ Website is live!</p>
+                        <p className="text-gray-400 text-xs mt-1">Sandbox: {sandboxData.sandboxId}</p>
+                      </div>
+                    )}
                     <button
                       onClick={() => window.open(sandboxData.url, '_blank')}
                       className="w-full bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"

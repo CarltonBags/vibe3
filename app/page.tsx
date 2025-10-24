@@ -40,6 +40,43 @@ export default function Home() {
   const [showAuthModal, setShowAuthModal] = useState(false)
   const hasStartedRef = useRef(false)
 
+  // Cleanup sandbox when user navigates away or closes tab
+  useEffect(() => {
+    const cleanupSandbox = async () => {
+      if (sandboxData?.sandboxId) {
+        try {
+          await fetch('/api/sandbox/cleanup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sandboxId: sandboxData.sandboxId }),
+          });
+          console.log('Sandbox cleaned up on page close');
+        } catch (err) {
+          console.error('Failed to cleanup sandbox:', err);
+        }
+      }
+    };
+
+    // Cleanup on page unload (close tab, navigate away)
+    const handleBeforeUnload = () => {
+      if (sandboxData?.sandboxId) {
+        // Use sendBeacon for reliable cleanup on page close
+        navigator.sendBeacon(
+          '/api/sandbox/cleanup',
+          JSON.stringify({ sandboxId: sandboxData.sandboxId })
+        );
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // Cleanup on component unmount (navigation within app)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      cleanupSandbox();
+    };
+  }, [sandboxData?.sandboxId]);
+
   // Handle reopened projects from URL params
   useEffect(() => {
     const projectId = searchParams.get('projectId')

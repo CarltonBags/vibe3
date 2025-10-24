@@ -49,6 +49,12 @@ export default function Projects() {
   }
 
   const handleReopenProject = async (projectId: string) => {
+    // Prevent double-clicking
+    if (reopeningId) {
+      console.log('Already reopening a project, please wait...');
+      return;
+    }
+    
     setReopeningId(projectId)
     try {
       const res = await fetch(`/api/projects/${projectId}/reopen`, {

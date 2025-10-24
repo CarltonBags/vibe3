@@ -101,19 +101,22 @@ export async function POST(
     const sandbox = await daytona.create();
     console.log('Sandbox created:', sandbox.id);
 
-    // Read template files
-    const templatesPath = path.join(process.cwd(), 'sandbox-templates');
-    const packageJson = fs.readFileSync(path.join(templatesPath, 'package.json'), 'utf-8');
-    const nextConfig = fs.readFileSync(path.join(templatesPath, 'next.config.js'), 'utf-8');
-    const tailwindConfig = fs.readFileSync(path.join(templatesPath, 'tailwind.config.js'), 'utf-8');
-    const postcssConfig = fs.readFileSync(path.join(templatesPath, 'postcss.config.js'), 'utf-8');
-    const tsConfig = fs.readFileSync(path.join(templatesPath, 'tsconfig.json'), 'utf-8');
-    const globalsCss = '@tailwind base;\n@tailwind components;\n@tailwind utilities;';
-    const layoutTsx = fs.readFileSync(path.join(templatesPath, 'app/layout.tsx'), 'utf-8');
+    try {
+      // Read template files
+      const templatesPath = path.join(process.cwd(), 'sandbox-templates');
+      const packageJson = fs.readFileSync(path.join(templatesPath, 'package.json'), 'utf-8');
+      const nextConfig = fs.readFileSync(path.join(templatesPath, 'next.config.js'), 'utf-8');
+      const tailwindConfig = fs.readFileSync(path.join(templatesPath, 'tailwind.config.js'), 'utf-8');
+      const postcssConfig = fs.readFileSync(path.join(templatesPath, 'postcss.config.js'), 'utf-8');
+      const tsConfig = fs.readFileSync(path.join(templatesPath, 'tsconfig.json'), 'utf-8');
+      const globalsCss = '@tailwind base;\n@tailwind components;\n@tailwind utilities;';
+      const layoutTsx = fs.readFileSync(path.join(templatesPath, 'app/layout.tsx'), 'utf-8');
 
-    // Create project structure
-    await sandbox.fs.createFolder('/workspace/app', '755');
-    await sandbox.fs.createFolder('/workspace/app/components', '755');
+      // Create project structure in sandbox
+      await sandbox.fs.createFolder('/workspace/app', '755');
+      await sandbox.fs.createFolder('/workspace/app/components', '755');
+      await sandbox.fs.createFolder('/workspace/app/types', '755');
+      await sandbox.fs.createFolder('/workspace/app/utils', '755');
     
     // Write configuration files
     await sandbox.fs.uploadFile(Buffer.from(packageJson), '/workspace/package.json');
@@ -157,13 +160,24 @@ export async function POST(
       })
       .eq('id', projectId);
 
-    return NextResponse.json({
-      success: true,
-      sandboxId: sandbox.id,
-      url,
-      projectId,
-      projectName: project.name
-    });
+      return NextResponse.json({
+        success: true,
+        sandboxId: sandbox.id,
+        url,
+        projectId,
+        projectName: project.name
+      });
+
+    } catch (execError) {
+      // If setup fails, clean up the sandbox
+      console.error('Failed to set up sandbox, cleaning up...', execError);
+      try {
+        await sandbox.remove();
+      } catch (cleanupErr) {
+        console.warn('Could not cleanup failed sandbox:', cleanupErr);
+      }
+      throw execError; // Re-throw to outer catch
+    }
 
   } catch (error) {
     console.error('Error reopening project:', error);

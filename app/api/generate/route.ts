@@ -154,12 +154,15 @@ You MUST return a JSON object with this EXACT structure:
    - Use client-side state management for navigation, NOT Next.js routing
    - Everything must be in ONE page with conditional rendering
 
-4. **CRITICAL - Avoid Hydration Errors**:
+4. **CRITICAL - Avoid Hydration Errors & SSR Issues**:
    - Do NOT use Math.random(), Date.now(), or dynamic IDs in initial render
    - Do NOT conditionally render based on client-only APIs (window, localStorage) without useEffect
    - Keep server and client render identical on first load
    - Load dynamic/user-specific content in useEffect after mount
    - Use stable keys for lists (not random or index-based if items can change)
+   - **ALWAYS add 'use client' directive** at the top of EVERY component file
+   - Avoid complex server-side logic that could break Next.js bootstrapping
+   - Keep components simple and client-side rendered
 
 5. **Must Use**: TypeScript with proper types and interfaces
 6. **Styling**: Use ONLY Tailwind CSS classes - no inline styles, no external CSS
@@ -667,6 +670,14 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
           }
         }
         
+        // Ensure all .tsx/.jsx component files have 'use client' directive
+        if ((file.path.endsWith('.tsx') || file.path.endsWith('.jsx')) && 
+            !content.trim().startsWith("'use client'") && 
+            !content.trim().startsWith('"use client"')) {
+          console.log(`🔧 Adding 'use client' to ${file.path}`);
+          content = "'use client'\n\n" + content;
+        }
+        
         console.log(`Uploading: ${filePath}`);
         await sandbox.fs.uploadFile(Buffer.from(content), filePath);
       }
@@ -791,8 +802,9 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
         }
       }
       
-      // Start Next.js dev server in background
+      // Clear any existing cache and start Next.js dev server
       console.log('Starting Next.js dev server...');
+      await sandbox.process.executeCommand('cd /workspace && rm -rf .next node_modules/.cache || true');
       await sandbox.process.executeCommand('cd /workspace && nohup npm run dev > /tmp/next.log 2>&1 &');
       
       // Wait for server to start and check logs

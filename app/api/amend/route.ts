@@ -239,14 +239,15 @@ Generate ONLY the files that need to change. Return JSON with files array and su
         await sandbox.fs.uploadFile(Buffer.from(file.content), filePath);
       }
 
-      // Restart Next.js dev server to apply changes
+      // Hard restart Next.js dev server to clear cache and apply changes
       console.log('Restarting Next.js dev server...');
-      await sandbox.process.executeCommand('cd /workspace && pkill -f "next dev" || true');
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await sandbox.process.executeCommand('cd /workspace && pkill -9 node || true');
+      await sandbox.process.executeCommand('cd /workspace && rm -rf .next || true');
+      await new Promise(resolve => setTimeout(resolve, 3000));
       await sandbox.process.executeCommand('cd /workspace && nohup npm run dev > /tmp/next.log 2>&1 &');
       
-      // Wait for server to restart
-      await new Promise(resolve => setTimeout(resolve, 8000));
+      // Wait for server to fully restart
+      await new Promise(resolve => setTimeout(resolve, 12000));
 
       // Get the preview URL (should be the same)
       const previewLink = await sandbox.getPreviewLink(3000);

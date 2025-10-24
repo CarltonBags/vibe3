@@ -184,7 +184,7 @@ export async function POST(
       console.error('Failed to set up sandbox, cleaning up...', execError);
       try {
         const failedSandbox = await daytona.get(sandbox.id);
-        await failedSandbox.remove();
+        await failedSandbox.delete();
         console.log('Failed sandbox cleaned up successfully');
       } catch (cleanupErr) {
         console.warn('Could not cleanup failed sandbox:', cleanupErr);

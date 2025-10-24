@@ -203,6 +203,24 @@ export default function Home() {
   return (
     <>
       <main className="min-h-screen flex bg-black">
+        {/* Top Left - Vibe Logo (only when hasGenerated) */}
+        {hasGenerated && (
+          <button
+            onClick={handleReset}
+            className="fixed top-4 left-4 z-40 text-2xl font-bold cursor-pointer hover:opacity-80 transition-opacity"
+            style={{
+              backgroundImage: 'url(/vibe_gradient.png)',
+              WebkitBackgroundClip: 'text',
+              backgroundClip: 'text',
+              color: 'transparent',
+              backgroundSize: 'cover',
+              backgroundPosition: 'center'
+            }}
+          >
+            vibe
+          </button>
+        )}
+
         {/* Top Right - Usage Indicator + User Menu */}
         {!hasGenerated && (
           <div className="fixed top-4 right-4 z-40 flex items-center gap-4">
@@ -342,13 +360,6 @@ export default function Home() {
                     <p className="text-red-400 text-sm">{error}</p>
                   </div>
                 )}
-
-                <button
-                  onClick={handleReset}
-                  className="w-full text-purple-400 hover:text-purple-300 transition-colors text-sm"
-                >
-                  ← Create Another
-                </button>
               </div>
             )}
           </div>

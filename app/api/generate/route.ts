@@ -843,7 +843,8 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
           const hasErrors = logContent.includes('Error:') || 
                            logContent.includes('Failed to compile') ||
                            logContent.includes('Module not found') ||
-                           logContent.includes("Can't resolve");
+                           logContent.includes("Can't resolve") ||
+                           logContent.includes('Module build failed');
           
           if (!hasErrors || buildAttempts >= MAX_BUILD_ATTEMPTS) {
             hasCompileErrors = false;
@@ -869,10 +870,17 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
 **CRITICAL RULES**:
 1. Read the error message carefully
 2. If it's "Module not found" or "Can't resolve", the file is missing or the import path is wrong
-3. For missing files: Create them with minimal valid content
+3. For missing files: Create them with minimal valid content that matches the import
 4. For wrong paths: Fix the import statement
 5. Return ONLY files that need to be fixed or created
 6. Keep fixes minimal - don't rewrite working code
+7. **ALWAYS add 'use client' directive to component files**
+
+**For missing components**:
+- Create the component file with the exact name being imported
+- Use a simple functional component structure
+- Include proper TypeScript types
+- Add 'use client' at the top
 
 Return JSON:
 \`\`\`json
@@ -880,7 +888,7 @@ Return JSON:
   "files": [
     {
       "path": "app/components/MissingFile.tsx",
-      "content": "... minimal valid component ..."
+      "content": "'use client'\\n\\ninterface Props {\\n  // Add props as needed\\n}\\n\\nexport default function MissingFile({}: Props) {\\n  return (\\n    <div className=\\"p-4\\">\\n      <h2>Component Placeholder</h2>\\n    </div>\\n  );\\n}"
     }
   ]
 }
@@ -888,7 +896,7 @@ Return JSON:
               },
               {
                 role: "user",
-                content: `Build errors:\n\`\`\`\n${logContent.substring(0, 2000)}\n\`\`\`\n\nFix ONLY these specific errors. Return JSON with files array.`
+                content: `Build errors:\n\`\`\`\n${logContent.substring(0, 2000)}\n\`\`\`\n\nCurrent files in project:\n${allFiles.map(f => f.path).join('\n')}\n\nFix ONLY these specific errors. Return JSON with files array.`
               }
             ],
             temperature: 0.3,

@@ -79,15 +79,16 @@ export async function GET(req: Request) {
     if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
       let js = await response.text();
       const baseUrl = new URL(targetUrl);
-      const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=`;
+      const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=/`;
       const tokenSuffix = token ? `&token=${encodeURIComponent(token)}` : '';
       
-      // Rewrite webpack chunk URLs
+      // Rewrite webpack chunk URLs - ensure paths start with /
       js = js
         .replace(/__webpack_require__\.p\s*=\s*"[^"]*"/g, `__webpack_require__.p="${proxyPrefix}"`)
-        .replace(/"assetPrefix":"[^"]*"/g, `"assetPrefix":"${proxyPrefix.slice(0, -6)}"`)
+        .replace(/"assetPrefix":"[^"]*"/g, `"assetPrefix":"${proxyPrefix.replace('&path=/', '')}"`)
         // Rewrite any hardcoded /_next/ paths
-        .replace(/"\/_next\//g, `"${proxyPrefix}/_next/`);
+        .replace(/"\/_next\//g, `"${proxyPrefix}_next/`)
+        .replace(/(['"])_next\//g, `$1${proxyPrefix}_next/`);
       
       return new NextResponse(js, {
         status: 200,

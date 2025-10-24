@@ -512,37 +512,78 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
     let filesData: { files: Array<{ path: string; content: string }> };
     try {
       // Clean markdown formatting if present
-      responseText = responseText
+      let cleanedResponse = responseText
         .replace(/```json\n?/g, '')
         .replace(/```\n?/g, '')
         .trim();
       
-      filesData = JSON.parse(responseText);
+      // Try to parse as JSON
+      filesData = JSON.parse(cleanedResponse);
       
       if (!filesData.files || !Array.isArray(filesData.files)) {
-        throw new Error('Invalid response format');
+        throw new Error('Invalid response format: missing or invalid files array');
+      }
+
+      if (filesData.files.length === 0) {
+        throw new Error('Invalid response format: files array is empty');
       }
 
       // CRITICAL: Unescape the content field if it contains escaped newlines
       // The AI sometimes returns content as escaped strings like "...\n\n..."
-      filesData.files = filesData.files.map(file => ({
-        ...file,
-        content: file.content
-          .replace(/\\n/g, '\n')  // Unescape newlines
-          .replace(/\\t/g, '\t')  // Unescape tabs
-          .replace(/\\"/g, '"')   // Unescape quotes
-          .replace(/\\\\/g, '\\') // Unescape backslashes (do this last!)
-      }));
+      filesData.files = filesData.files.map(file => {
+        let content = file.content;
+        
+        // Check if content itself is JSON-wrapped (nested JSON error)
+        if (typeof content === 'string' && content.trim().startsWith('{') && content.includes('"files"')) {
+          console.warn(`⚠️ File ${file.path} has nested JSON, attempting to extract...`);
+          try {
+            const nested = JSON.parse(content);
+            if (nested.files && nested.files[0]) {
+              content = nested.files[0].content;
+              console.log(`✅ Extracted nested content for ${file.path}`);
+            }
+          } catch (e) {
+            console.warn(`⚠️ Could not extract nested JSON for ${file.path}`);
+          }
+        }
+        
+        return {
+          ...file,
+          content: content
+            .replace(/\\n/g, '\n')  // Unescape newlines
+            .replace(/\\t/g, '\t')  // Unescape tabs
+            .replace(/\\"/g, '"')   // Unescape quotes
+            .replace(/\\\\/g, '\\') // Unescape backslashes (do this last!)
+        };
+      });
 
-      console.log(`Successfully parsed ${filesData.files.length} files from AI response`);
+      console.log(`✅ Successfully parsed ${filesData.files.length} files from AI response`);
       
     } catch (parseError) {
-      console.error('Failed to parse AI response as JSON, falling back to single file');
+      console.error('❌ Failed to parse AI response as JSON:', parseError);
+      console.log('Falling back to single file mode');
+      
       // Fallback: treat entire response as single page.tsx file
+      // But first try to extract code if it looks like JSON
+      let fallbackContent = responseText;
+      
+      if (fallbackContent.trim().startsWith('{') && fallbackContent.includes('"content"')) {
+        console.log('Attempting to extract code from malformed JSON...');
+        const contentMatch = fallbackContent.match(/"content":\s*"((?:[^"\\]|\\[\s\S])*)"/);
+        if (contentMatch) {
+          fallbackContent = contentMatch[1]
+            .replace(/\\n/g, '\n')
+            .replace(/\\t/g, '\t')
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\');
+          console.log('✅ Extracted content from malformed JSON');
+        }
+      }
+      
       filesData = {
         files: [{
           path: 'app/page.tsx',
-          content: responseText
+          content: fallbackContent
         }]
       };
     }
@@ -655,34 +696,53 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
         let fixedContent = pageText;
         let needsFix = false;
         
-        // Fix 1: Ensure 'use client' directive
-        if (!fixedContent.trim().startsWith("'use client'") && !fixedContent.trim().startsWith('"use client"')) {
-          console.log('🔧 Adding "use client" directive');
-          fixedContent = "'use client'\n\n" + fixedContent;
-          needsFix = true;
-        }
-        
-        // Fix 2: Check if content starts with JSON (invalid code)
-        if (fixedContent.trim().startsWith('{') && fixedContent.includes('"files"')) {
-          console.log('🔧 Detected JSON wrapper, extracting actual code');
+        // Fix 1: Check if content starts with JSON (invalid code) - DO THIS FIRST
+        const trimmedContent = fixedContent.trim();
+        if (trimmedContent.startsWith('{') && (trimmedContent.includes('"files"') || trimmedContent.includes('"path"'))) {
+          console.log('🔧 Detected JSON wrapper in code, extracting actual code');
           try {
+            // Try to parse as full JSON response
             const jsonMatch = JSON.parse(fixedContent);
-            if (jsonMatch.files && jsonMatch.files[0]) {
+            if (jsonMatch.files && Array.isArray(jsonMatch.files) && jsonMatch.files[0]) {
               fixedContent = jsonMatch.files[0].content;
+              console.log('✅ Extracted code from JSON wrapper');
               needsFix = true;
             }
           } catch (e) {
-            console.log('Could not parse as JSON, trying regex extraction');
-            const contentMatch = fixedContent.match(/"content":\s*"((?:[^"\\]|\\.)*)"/);
+            // If full parse fails, try regex extraction
+            console.log('Could not parse as complete JSON, trying regex extraction');
+            
+            // Try to find "content": "..." pattern
+            const contentMatch = fixedContent.match(/"content":\s*"((?:[^"\\]|\\[\s\S])*)"/);
             if (contentMatch) {
               fixedContent = contentMatch[1]
                 .replace(/\\n/g, '\n')
                 .replace(/\\t/g, '\t')
                 .replace(/\\"/g, '"')
                 .replace(/\\\\/g, '\\');
+              console.log('✅ Extracted code using regex');
               needsFix = true;
+            } else {
+              // Last resort: try to extract everything after first "content": until last }
+              const betterMatch = fixedContent.match(/"content":\s*"([^]*?)"\s*\}(?:\s*\])?(?:\s*\})?$/);
+              if (betterMatch) {
+                fixedContent = betterMatch[1]
+                  .replace(/\\n/g, '\n')
+                  .replace(/\\t/g, '\t')
+                  .replace(/\\"/g, '"')
+                  .replace(/\\\\/g, '\\');
+                console.log('✅ Extracted code using fallback regex');
+                needsFix = true;
+              }
             }
           }
+        }
+        
+        // Fix 2: Ensure 'use client' directive (after extracting from JSON)
+        if (!fixedContent.trim().startsWith("'use client'") && !fixedContent.trim().startsWith('"use client"')) {
+          console.log('🔧 Adding "use client" directive');
+          fixedContent = "'use client'\n\n" + fixedContent;
+          needsFix = true;
         }
         
         if (needsFix) {

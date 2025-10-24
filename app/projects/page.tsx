@@ -64,7 +64,7 @@ export default function Projects() {
       if (res.ok) {
         const data = await res.json()
         // Redirect to home page with project data
-        router.push(`/?projectId=${projectId}&sandboxUrl=${encodeURIComponent(data.url)}&projectName=${encodeURIComponent(data.projectName)}`)
+        router.push(`/?projectId=${projectId}&sandboxId=${data.sandboxId}&sandboxUrl=${encodeURIComponent(data.url)}&projectName=${encodeURIComponent(data.projectName)}`)
       } else {
         const error = await res.json()
         alert(`Failed to reopen project: ${error.error}`)

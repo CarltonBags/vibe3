@@ -80,38 +80,39 @@ export default function Home() {
     };
   }, [sandboxData?.sandboxId]);
 
-  // Handle reopened projects from URL params
-  useEffect(() => {
-    const projectId = searchParams.get('projectId')
-    const sandboxUrl = searchParams.get('sandboxUrl')
-    const projectName = searchParams.get('projectName')
+    // Handle reopened projects from URL params
+    useEffect(() => {
+      const projectId = searchParams.get('projectId')
+      const sandboxUrl = searchParams.get('sandboxUrl')
+      const sandboxId = searchParams.get('sandboxId')
+      const projectName = searchParams.get('projectName')
 
-    if (projectId && sandboxUrl && !hasGenerated) {
-      setIsGenerating(true)
-      setHasGenerated(true)
-      setProgress('🚀 Loading your project...')
-      
-      // Fetch project files
-      fetch(`/api/projects/${projectId}/files`)
-        .then(res => res.json())
-        .then(data => {
-          setSandboxData({
-            success: true,
-            sandboxId: projectId,
-            url: sandboxUrl,
-            files: data.files || []
+      if (projectId && sandboxUrl && sandboxId && !hasGenerated) {
+        setIsGenerating(true)
+        setHasGenerated(true)
+        setProgress('🚀 Loading your project...')
+        
+        // Fetch project files
+        fetch(`/api/projects/${projectId}/files`)
+          .then(res => res.json())
+          .then(data => {
+            setSandboxData({
+              success: true,
+              sandboxId: sandboxId, // Use the actual sandbox ID from URL params
+              url: sandboxUrl,
+              files: data.files || []
+            })
+            setProgress('')
+            setIsGenerating(false)
           })
-          setProgress('')
-          setIsGenerating(false)
-        })
-        .catch(err => {
-          console.error('Error loading project:', err)
-          setError('Failed to load project files')
-          setIsGenerating(false)
-          setHasGenerated(false)
-        })
-    }
-  }, [searchParams, hasGenerated])
+          .catch(err => {
+            console.error('Error loading project:', err)
+            setError('Failed to load project files')
+            setIsGenerating(false)
+            setHasGenerated(false)
+          })
+      }
+    }, [searchParams, hasGenerated])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

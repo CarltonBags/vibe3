@@ -82,7 +82,7 @@ export async function POST(req: Request) {
       messages: [
         {
           role: "system",
-          content: `You are an expert Next.js developer making targeted improvements to existing code.
+          content: `You are an ELITE Next.js developer making targeted improvements to existing code.
 
 **YOUR TASK**: Apply the user's requested changes to the existing codebase WITHOUT rewriting everything.
 
@@ -228,9 +228,6 @@ Generate ONLY the files that need to change. Return JSON with files array and su
 
       // Update project in database with new files
       await saveProjectFiles(projectId, updatedFiles);
-      await updateProject(projectId, {
-        updated_at: new Date().toISOString()
-      });
 
       // Increment token usage (but not generation count)
       await incrementUsage(userId, tokensUsed, false);

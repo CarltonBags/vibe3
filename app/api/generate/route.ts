@@ -141,6 +141,8 @@ You MUST return a JSON object with this EXACT structure:
    - app/types/index.ts (TypeScript types/interfaces if needed)
    - app/utils/*.ts (utility functions if needed)
 
+   **CRITICAL**: If you import ANY component in app/page.tsx, you MUST create that component file in app/components/
+
 2. **Component Architecture**: 
    - Extract reusable components into separate files
    - Each component in its own file in app/components/
@@ -495,7 +497,9 @@ export default function Page() {
 - Define 4-8 reusable components with TypeScript interfaces
 - Add rich content, not placeholders
 - Make it look like a $50,000 professional website
-- Users expect to be AMAZED!`
+- Users expect to be AMAZED!
+- **MANDATORY**: Every component you import MUST exist as a file in app/components/
+- **NO EXCEPTIONS**: If you write `import FeatureCard from './components/FeatureCard'`, you MUST create app/components/FeatureCard.tsx`
         },
         {
           role: "user",
@@ -561,6 +565,54 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
       });
 
       console.log(`✅ Successfully parsed ${filesData.files.length} files from AI response`);
+      
+      // Validate that all imports have corresponding files
+      const pageFile = filesData.files.find(f => f.path === 'app/page.tsx');
+      if (pageFile) {
+        const importMatches = pageFile.content.match(/import\s+\w+\s+from\s+['"]\.\/components\/(\w+)['"]/g);
+        if (importMatches) {
+          const importedComponents = importMatches.map(match => {
+            const componentMatch = match.match(/import\s+\w+\s+from\s+['"]\.\/components\/(\w+)['"]/);
+            return componentMatch ? componentMatch[1] : null;
+          }).filter(Boolean);
+          
+          const existingComponents = filesData.files
+            .filter(f => f.path.startsWith('app/components/'))
+            .map(f => f.path.replace('app/components/', '').replace('.tsx', ''));
+          
+          const missingComponents = importedComponents.filter(comp => !existingComponents.includes(comp));
+          
+          if (missingComponents.length > 0) {
+            console.warn(`⚠️ Missing components detected: ${missingComponents.join(', ')}`);
+            console.log('🔧 Creating missing components...');
+            
+            // Create missing components
+            for (const componentName of missingComponents) {
+              const componentContent = `'use client'
+
+interface Props {
+  // Add props as needed
+}
+
+export default function ${componentName}({}: Props) {
+  return (
+    <div className="p-4 bg-white rounded-lg shadow-md">
+      <h3 className="text-lg font-semibold mb-2">${componentName}</h3>
+      <p className="text-gray-600">Component placeholder</p>
+    </div>
+  );
+}`;
+              
+              filesData.files.push({
+                path: `app/components/${componentName}.tsx`,
+                content: componentContent
+              });
+            }
+            
+            console.log(`✅ Created ${missingComponents.length} missing components`);
+          }
+        }
+      }
       
     } catch (parseError) {
       console.error('❌ Failed to parse AI response as JSON:', parseError);
@@ -839,12 +891,19 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
           const logContent = logs.result || '';
           console.log('Next.js logs:', logContent.substring(0, 500));
           
+          // Also check for errors in the process output
+          const processLogs = await sandbox.process.executeCommand('ps aux | grep node');
+          const processContent = processLogs.result || '';
+          console.log('Process logs:', processContent.substring(0, 200));
+          
           // Check for compilation errors
           const hasErrors = logContent.includes('Error:') || 
                            logContent.includes('Failed to compile') ||
                            logContent.includes('Module not found') ||
                            logContent.includes("Can't resolve") ||
-                           logContent.includes('Module build failed');
+                           logContent.includes('Module build failed') ||
+                           logContent.includes('ERROR') ||
+                           logContent.includes('error');
           
           if (!hasErrors || buildAttempts >= MAX_BUILD_ATTEMPTS) {
             hasCompileErrors = false;

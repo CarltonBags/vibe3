@@ -253,7 +253,7 @@ export default function Home() {
 
         {/* Left Panel - Input & Status */}
         <div className={`${hasGenerated ? 'w-1/3' : 'w-full'} transition-all duration-500 flex flex-col bg-black p-8`}>
-          <div className={`${hasGenerated ? '' : 'flex-1 flex items-center justify-center'}`}>
+          <div className={`${hasGenerated ? 'pt-12' : 'flex-1 flex items-center justify-center'}`}>
             <div className="w-full max-w-2xl">
               {!hasGenerated && (
                 <h1 className="text-5xl font-bold text-center mb-12">

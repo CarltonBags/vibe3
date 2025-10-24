@@ -62,7 +62,7 @@ export async function GET(
     // Get project files
     const { data: filesData, error: filesError } = await supabaseAdmin
       .from('project_files')
-      .select('file_path, content')
+      .select('file_path, file_content')
       .eq('project_id', projectId)
 
     if (filesError) {
@@ -76,7 +76,7 @@ export async function GET(
     // Transform to match expected format
     const files = filesData?.map(f => ({
       path: f.file_path,
-      content: f.content
+      content: f.file_content
     })) || []
 
     return NextResponse.json({ files })

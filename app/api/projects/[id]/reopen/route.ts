@@ -136,13 +136,13 @@ export async function POST(
     // Upload saved project files
     console.log(`Uploading ${files.length} saved files...`);
     for (const file of files) {
-      if (!file.content) {
+      if (!file.file_content) {
         console.warn(`Skipping file with no content: ${file.file_path}`);
         continue;
       }
       const filePath = `/workspace/${file.file_path}`;
       console.log(`Uploading: ${filePath}`);
-      await sandbox.fs.uploadFile(Buffer.from(file.content), filePath);
+      await sandbox.fs.uploadFile(Buffer.from(file.file_content), filePath);
     }
 
     // Install dependencies

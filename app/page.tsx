@@ -198,6 +198,11 @@ export default function Home() {
     setProgress('')
     setError('')
     hasStartedRef.current = false
+    
+    // Clear URL params if any
+    if (typeof window !== 'undefined') {
+      window.history.replaceState({}, '', '/')
+    }
   }
 
   return (

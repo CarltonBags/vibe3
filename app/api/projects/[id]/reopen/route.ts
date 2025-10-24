@@ -98,7 +98,13 @@ export async function POST(
 
     // Create new sandbox (same as /api/generate)
     console.log('Creating fresh sandbox...');
-    const sandbox = await daytona.create();
+    const sandbox = await daytona.create({
+      image: 'node:20-alpine',
+      public: true,
+      envVars: {
+        NODE_ENV: 'development'
+      }
+    });
     console.log('Sandbox created:', sandbox.id);
 
     try {
@@ -113,27 +119,10 @@ export async function POST(
       const layoutTsx = fs.readFileSync(path.join(templatesPath, 'app/layout.tsx'), 'utf-8');
 
       // Create project structure in sandbox
-      // Try to create folders, ignore errors if they already exist
-      try {
-        await sandbox.fs.createFolder('/workspace/app', '755');
-      } catch (e) {
-        console.log('Folder /workspace/app might already exist, continuing...');
-      }
-      try {
-        await sandbox.fs.createFolder('/workspace/app/components', '755');
-      } catch (e) {
-        console.log('Folder /workspace/app/components might already exist, continuing...');
-      }
-      try {
-        await sandbox.fs.createFolder('/workspace/app/types', '755');
-      } catch (e) {
-        console.log('Folder /workspace/app/types might already exist, continuing...');
-      }
-      try {
-        await sandbox.fs.createFolder('/workspace/app/utils', '755');
-      } catch (e) {
-        console.log('Folder /workspace/app/utils might already exist, continuing...');
-      }
+      await sandbox.fs.createFolder('/workspace/app', '755');
+      await sandbox.fs.createFolder('/workspace/app/components', '755');
+      await sandbox.fs.createFolder('/workspace/app/types', '755');
+      await sandbox.fs.createFolder('/workspace/app/utils', '755');
     
     // Write configuration files
     await sandbox.fs.uploadFile(Buffer.from(packageJson), '/workspace/package.json');
@@ -189,8 +178,8 @@ export async function POST(
       // If setup fails, clean up the sandbox
       console.error('Failed to set up sandbox, cleaning up...', execError);
       try {
-        const sandboxToRemove = await daytona.get(sandbox.id);
-        await sandboxToRemove.remove();
+        // Use the sandbox object directly (same pattern as old sandbox cleanup)
+        await sandbox.remove();
         console.log('Failed sandbox cleaned up successfully');
       } catch (cleanupErr) {
         console.warn('Could not cleanup failed sandbox:', cleanupErr);

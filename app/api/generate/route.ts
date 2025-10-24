@@ -810,6 +810,21 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
       // Wait for server to start and check logs
       await new Promise(resolve => setTimeout(resolve, 12000));
       
+      // Prepare complete file list for GitHub-ready project (declare before auto-fix loop)
+      const allFiles = [
+        // Configuration files
+        { path: 'package.json', content: packageJson },
+        { path: 'next.config.js', content: nextConfig },
+        { path: 'tailwind.config.js', content: tailwindConfig },
+        { path: 'postcss.config.js', content: postcssConfig },
+        { path: 'tsconfig.json', content: tsConfig },
+        // App files
+        { path: 'app/globals.css', content: globalsCss },
+        { path: 'app/layout.tsx', content: layoutTsx },
+        // Generated files
+        ...filesData.files
+      ];
+      
       // Check if server started successfully and auto-fix errors
       let buildAttempts = 0;
       const MAX_BUILD_ATTEMPTS = 2;
@@ -933,21 +948,6 @@ Return JSON:
 
       // Get the correct preview URL from Daytona
       const previewLink = await sandbox.getPreviewLink(3000);
-
-      // Prepare complete file list for GitHub-ready project
-      const allFiles = [
-        // Configuration files
-        { path: 'package.json', content: packageJson },
-        { path: 'next.config.js', content: nextConfig },
-        { path: 'tailwind.config.js', content: tailwindConfig },
-        { path: 'postcss.config.js', content: postcssConfig },
-        { path: 'tsconfig.json', content: tsConfig },
-        // App files
-        { path: 'app/globals.css', content: globalsCss },
-        { path: 'app/layout.tsx', content: layoutTsx },
-        // Generated files
-        ...filesData.files
-      ];
 
       // Create or update project in database
       if (existingProjectId && typeof existingProjectId === 'string') {

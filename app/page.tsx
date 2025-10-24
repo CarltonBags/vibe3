@@ -15,6 +15,7 @@ interface FileContent {
 interface SandboxResponse {
   success: boolean;
   sandboxId: string;
+  projectId?: string;
   url?: string;
   token?: string;
   files?: FileContent[];
@@ -99,6 +100,7 @@ export default function Home() {
             setSandboxData({
               success: true,
               sandboxId: sandboxId, // Use the actual sandbox ID from URL params
+              projectId: projectId, // Store project ID for amendments
               url: sandboxUrl,
               files: data.files || []
             })
@@ -229,7 +231,7 @@ export default function Home() {
         body: JSON.stringify({
           amendmentPrompt: amendmentPrompt.trim(),
           sandboxId: sandboxData.sandboxId,
-          projectId: searchParams.get('projectId'),
+          projectId: sandboxData.projectId || searchParams.get('projectId'),
           currentFiles: sandboxData.files
         }),
       })

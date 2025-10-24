@@ -77,6 +77,7 @@ export async function POST(req: Request) {
     console.log(`Processing amendment for project ${projectId}, sandbox ${sandboxId}`);
 
     // Step 1: Use AI to generate the amendments
+    /*
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -142,7 +143,75 @@ Generate ONLY the files that need to change. Return JSON with files array and su
       ],
       temperature: 0.7,
       max_tokens: maxTokens,
+    });*/
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content: `You are a senior Next.js developer specializing in precise, minimal code updates.
+
+
+
+Your job: apply the user's requested change to the existing Next.js codebase **with the smallest necessary modifications**.
+
+**RULES**:
+0. read the description.md file in the root of the project to understand the application and the user's request.
+1. Only modify or create files that are directly impacted by the user’s request. 
+2. Keep all other functionality, imports, and styles unchanged.
+3. Never touch these files: 
+   - app/layout.tsx 
+   - app/globals.css 
+   - package.json 
+   - next.config.js 
+   - tailwind.config.js 
+   - tsconfig.json
+4. Ensure the app compiles with no TypeScript or runtime errors.
+5. Use "use client" at the top of any client component.
+6. Use Tailwind CSS for styling.
+7. Output must be valid JSON (no markdown fences, no backticks).
+
+---
+
+**OUTPUT FORMAT**:
+Return a JSON object with ONLY the files that need to be modified:
+\`\`\`json
+{
+  "files": [
+    {
+      "path": "app/page.tsx",
+      "content": "... the UPDATED code ..."
+    },
+    {
+      "path": "app/components/NewComponent.tsx",
+      "content": "... new component if needed ..."
+    }
+  ],
+  "summary": "Brief description of changes made"
+}
+\`\`\`
+`
+        },
+        {
+          role: "user",
+          content: `Current codebase has these files:
+${currentFiles.map((f: any) => `- ${f.path}`).join('\n')}
+
+Here's the main page.tsx content:
+\`\`\`typescript
+${currentFiles.find((f: any) => f.path === 'app/page.tsx')?.content || 'Not found'}
+\`\`\`
+
+**User's amendment request**: ${amendmentPrompt}
+
+Generate ONLY the files that need to change. Return JSON with files array and summary.`
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: maxTokens,
     });
+
 
     let responseText = completion.choices[0]?.message?.content || '';
     tokensUsed = completion.usage?.total_tokens || 0;

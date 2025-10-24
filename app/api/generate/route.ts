@@ -597,7 +597,7 @@ interface Props {
 export default function ${componentName}({}: Props) {
   return (
     <div className="p-4 bg-white rounded-lg shadow-md">
-      <h3 className="text-lg font-semibold mb-2">{${componentName}}</h3>
+      <h3 className="text-lg font-semibold mb-2">${componentName}</h3>
       <p className="text-gray-600">Component placeholder</p>
     </div>
   );

@@ -499,7 +499,7 @@ export default function Page() {
 - Make it look like a $50,000 professional website
 - Users expect to be AMAZED!
 - **MANDATORY**: Every component you import MUST exist as a file in app/components/
-- **NO EXCEPTIONS**: If you write `import FeatureCard from './components/FeatureCard'`, you MUST create app/components/FeatureCard.tsx`
+- **NO EXCEPTIONS**: If you write \`import FeatureCard from './components/FeatureCard'\`, you MUST create app/components/FeatureCard.tsx
         },
         {
           role: "user",
@@ -574,7 +574,7 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
           const importedComponents = importMatches.map(match => {
             const componentMatch = match.match(/import\s+\w+\s+from\s+['"]\.\/components\/(\w+)['"]/);
             return componentMatch ? componentMatch[1] : null;
-          }).filter(Boolean);
+          }).filter((comp): comp is string => comp !== null);
           
           const existingComponents = filesData.files
             .filter(f => f.path.startsWith('app/components/'))

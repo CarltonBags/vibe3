@@ -67,7 +67,7 @@ export async function POST(req: Request) {
     });
 
     try {
-      await daytona.remove(sandboxId);
+      await daytona.delete(sandboxId);
       console.log(`Sandbox ${sandboxId} cleaned up successfully`);
     } catch (err) {
       console.warn(`Sandbox ${sandboxId} might already be deleted:`, err);

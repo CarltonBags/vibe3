@@ -87,7 +87,7 @@ export async function POST(
     if (project.sandbox_id) {
       try {
         console.log(`Cleaning up old sandbox: ${project.sandbox_id}`);
-        await daytona.remove(project.sandbox_id);
+        await daytona.delete(project.sandbox_id);
         console.log('Old sandbox removed successfully');
       } catch (cleanupError) {
         console.warn('Could not remove old sandbox (might already be deleted):', cleanupError);

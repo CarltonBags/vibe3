@@ -255,6 +255,12 @@ export default function Home() {
         setAmendmentPrompt('')
         setProgress(`✨ ${data.summary}`)
         
+        // Force iframe reload to show changes
+        const iframe = document.querySelector('iframe[title="Preview"]') as HTMLIFrameElement
+        if (iframe) {
+          iframe.src = iframe.src
+        }
+        
         // Clear success message after a few seconds
         setTimeout(() => {
           setProgress('')

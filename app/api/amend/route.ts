@@ -117,7 +117,10 @@ Return a JSON object with ONLY the files that need to be modified:
 - Ensure all modified files are complete and functional
 - Use TypeScript with proper types
 - Use Tailwind CSS for styling
-- Maintain 'use client' directive where needed`
+- Maintain 'use client' directive where needed
+- AVOID hydration errors: Don't use dynamic content that differs between server/client
+- Use stable, consistent rendering (avoid random values, dates, Math.random() in initial render)
+- If you need dynamic content, load it in useEffect after mount`
         },
         {
           role: "user",

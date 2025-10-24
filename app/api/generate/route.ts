@@ -154,24 +154,31 @@ You MUST return a JSON object with this EXACT structure:
    - Use client-side state management for navigation, NOT Next.js routing
    - Everything must be in ONE page with conditional rendering
 
-4. **Must Use**: TypeScript with proper types and interfaces
-5. **Styling**: Use ONLY Tailwind CSS classes - no inline styles, no external CSS
-6. **NO Syntax Errors**: Code must be valid TypeScript that compiles without errors
+4. **CRITICAL - Avoid Hydration Errors**:
+   - Do NOT use Math.random(), Date.now(), or dynamic IDs in initial render
+   - Do NOT conditionally render based on client-only APIs (window, localStorage) without useEffect
+   - Keep server and client render identical on first load
+   - Load dynamic/user-specific content in useEffect after mount
+   - Use stable keys for lists (not random or index-based if items can change)
 
-5. **Icons & Visual Elements**: Use FontAwesome extensively:
+5. **Must Use**: TypeScript with proper types and interfaces
+6. **Styling**: Use ONLY Tailwind CSS classes - no inline styles, no external CSS
+7. **NO Syntax Errors**: Code must be valid TypeScript that compiles without errors
+
+8. **Icons & Visual Elements**: Use FontAwesome extensively:
    - Import from '@fortawesome/react-fontawesome'
    - Import icons from '@fortawesome/free-solid-svg-icons'
    - Use icons for EVERY feature, benefit, step, action button
    - Example: import { faRocket, faShield, faBolt, faHeart, faStar, faCheck } from '@fortawesome/free-solid-svg-icons'
    - Add decorative icons to enhance visual appeal
 
-6. **Component Architecture**: Create MULTIPLE internal components:
+9. **Component Architecture**: Create MULTIPLE internal components:
    - Define 4-8 smaller components within the page file
    - Examples: FeatureCard, TestimonialCard, StatsCounter, PricingCard, FAQItem, etc.
    - Each component should accept props and be reusable
    - This creates cleaner, more maintainable code
 
-7. **Functionality**: Include ALL necessary features:
+10. **Functionality**: Include ALL necessary features:
    - Sophisticated state management with useState, useEffect, useCallback
    - Event handlers for ALL user interactions
    - Form validation with visual feedback
@@ -181,7 +188,7 @@ You MUST return a JSON object with this EXACT structure:
    - Local storage for persistence (if applicable)
    - Smooth scrolling and navigation
 
-8. **Design System**: Create a STUNNING, DETAILED UI:
+11. **Design System**: Create a STUNNING, DETAILED UI:
    
    **HERO SECTION** (MUST INCLUDE):
    - Large, bold headline (text-5xl or text-6xl)
@@ -223,7 +230,7 @@ You MUST return a JSON object with this EXACT structure:
    - Social media icons
    - Copyright notice
 
-9. **Visual Design Details**:
+12. **Visual Design Details**:
    - Use gradient backgrounds (bg-gradient-to-br, bg-gradient-to-r)
    - Add shadows everywhere (shadow-lg, shadow-xl, shadow-2xl)
    - Round corners consistently (rounded-lg, rounded-xl, rounded-2xl)
@@ -233,14 +240,14 @@ You MUST return a JSON object with this EXACT structure:
    - Use animations (transition, transform, hover:scale-105)
    - Add subtle animations (animate-pulse, animate-bounce on CTAs)
    
-10. **Color Schemes**: Choose ONE cohesive palette:
+13. **Color Schemes**: Choose ONE cohesive palette:
     - Modern Tech: Indigo/Purple/Blue (bg-indigo-600, text-purple-400)
     - Finance/Trust: Blue/Green (bg-blue-600, text-green-500)
     - Creative: Purple/Pink/Orange (bg-purple-600, text-pink-400)
     - Professional: Gray/Blue (bg-slate-800, text-blue-500)
     - Energetic: Orange/Red/Yellow (bg-orange-500, text-red-400)
 
-11. **Typography Hierarchy**:
+14. **Typography Hierarchy**:
     - H1: text-5xl or text-6xl font-bold
     - H2: text-4xl font-bold
     - H3: text-2xl or text-3xl font-semibold
@@ -249,20 +256,20 @@ You MUST return a JSON object with this EXACT structure:
     - Use font-bold, font-semibold generously
     - Add text-gray-600 for secondary text
 
-12. **Spacing & Layout**:
+15. **Spacing & Layout**:
     - Full page sections: py-16 or py-20
     - Section containers: max-w-7xl mx-auto px-4
     - Space between sections: space-y-16 or space-y-20
     - Card padding: p-6 or p-8
     - Generous margins everywhere
 
-13. **Responsive Design**:
+16. **Responsive Design**:
     - Use grid-cols-1 md:grid-cols-2 lg:grid-cols-3
     - Stack vertically on mobile, rows on desktop
     - Hide/show elements: hidden md:block
     - Adjust text sizes: text-3xl md:text-5xl
 
-14. **Micro-interactions**:
+17. **Micro-interactions**:
     - Add hover:shadow-2xl to cards
     - Add hover:scale-105 transform transition
     - Add focus:ring-2 focus:ring-offset-2 to inputs

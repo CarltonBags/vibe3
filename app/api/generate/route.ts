@@ -569,7 +569,7 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
 
       console.log(`✅ Successfully parsed ${filesData.files.length} files from AI response`);
       
-      // Validate that all imports have corresponding files
+      // Validate that all imports have corresponding files BEFORE uploading
       const pageFile = filesData.files.find(f => f.path === 'app/page.tsx');
       if (pageFile) {
         console.log('🔍 Checking for component imports in page.tsx...');
@@ -697,6 +697,8 @@ export default function ${componentName}({}: Props) {
       await sandbox.fs.createFolder('/workspace/app/components', '755');
       await sandbox.fs.createFolder('/workspace/app/types', '755');
       await sandbox.fs.createFolder('/workspace/app/utils', '755');
+      
+      console.log('📁 Created project folders in sandbox');
       
       // Write configuration files
       await sandbox.fs.uploadFile(Buffer.from(packageJson), '/workspace/package.json');

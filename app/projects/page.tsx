@@ -20,6 +20,7 @@ export default function Projects() {
   const router = useRouter()
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
+  const [reopeningId, setReopeningId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -44,6 +45,29 @@ export default function Projects() {
       console.error('Error fetching projects:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleReopenProject = async (projectId: string) => {
+    setReopeningId(projectId)
+    try {
+      const res = await fetch(`/api/projects/${projectId}/reopen`, {
+        method: 'POST',
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        // Redirect to home page with project data
+        router.push(`/?projectId=${projectId}&sandboxUrl=${encodeURIComponent(data.url)}&projectName=${encodeURIComponent(data.projectName)}`)
+      } else {
+        const error = await res.json()
+        alert(`Failed to reopen project: ${error.error}`)
+        setReopeningId(null)
+      }
+    } catch (error) {
+      console.error('Error reopening project:', error)
+      alert('Failed to reopen project')
+      setReopeningId(null)
     }
   }
 
@@ -164,21 +188,37 @@ export default function Projects() {
 
                   {/* Actions */}
                   <div className="flex gap-2">
+                    <button
+                      onClick={() => handleReopenProject(project.id)}
+                      disabled={reopeningId === project.id}
+                      className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                    >
+                      {reopeningId === project.id ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                          <span>Opening...</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          <span>Open Project</span>
+                        </>
+                      )}
+                    </button>
                     {project.sandbox_url && (
                       <button
                         onClick={() => window.open(project.sandbox_url, '_blank')}
-                        className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-sm font-medium transition-colors"
+                        className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium transition-colors"
+                        title="Open current sandbox"
                       >
-                        View Live
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
                       </button>
                     )}
-                    <button
-                      className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium transition-colors"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                      </svg>
-                    </button>
                   </div>
                 </div>
               </div>

@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import AuthModal from './components/AuthModal'
 import UserMenu from './components/UserMenu'
@@ -27,6 +28,7 @@ type ViewMode = 'preview' | 'code';
 
 export default function Home() {
   const { user, loading: authLoading } = useAuth()
+  const searchParams = useSearchParams()
   const [prompt, setPrompt] = useState('')
   const [isGenerating, setIsGenerating] = useState(false)
   const [hasGenerated, setHasGenerated] = useState(false)
@@ -37,6 +39,39 @@ export default function Home() {
   const [selectedFile, setSelectedFile] = useState<string>('app/page.tsx')
   const [showAuthModal, setShowAuthModal] = useState(false)
   const hasStartedRef = useRef(false)
+
+  // Handle reopened projects from URL params
+  useEffect(() => {
+    const projectId = searchParams.get('projectId')
+    const sandboxUrl = searchParams.get('sandboxUrl')
+    const projectName = searchParams.get('projectName')
+
+    if (projectId && sandboxUrl && !hasGenerated) {
+      setIsGenerating(true)
+      setHasGenerated(true)
+      setProgress('🚀 Loading your project...')
+      
+      // Fetch project files
+      fetch(`/api/projects/${projectId}/files`)
+        .then(res => res.json())
+        .then(data => {
+          setSandboxData({
+            success: true,
+            sandboxId: projectId,
+            url: sandboxUrl,
+            files: data.files || []
+          })
+          setProgress('')
+          setIsGenerating(false)
+        })
+        .catch(err => {
+          console.error('Error loading project:', err)
+          setError('Failed to load project files')
+          setIsGenerating(false)
+          setHasGenerated(false)
+        })
+    }
+  }, [searchParams, hasGenerated])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

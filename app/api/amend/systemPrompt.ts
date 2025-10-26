@@ -28,15 +28,10 @@ const instructions =
 
 5. **COMPILATION**: The app MUST compile with no errors. Every imported component MUST exist with the exact name.
 
-6. **GRADIENT/STYLING CHANGES**: 
-   - If user requests a gradient color change, search for existing gradient classes (bg-gradient-to-r, bg-gradient-to-br, etc.)
-   - Replace the color values (e.g., from-indigo-600 with from-purple-600)
-   - Update ALL instances of that gradient in the file
-   - Don't change the structure, only the color classes
 
-7. Use "use client" at the top of any client component.
-8. Use Tailwind CSS for styling.
-9. Output must be valid JSON (no markdown fences, no backticks).
+6. Use "use client" at the top of any client component.
+7. Use Tailwind CSS for styling.
+8. Output must be valid JSON (no markdown fences, no backticks).
 
 ---
 

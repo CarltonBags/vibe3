@@ -217,25 +217,24 @@ Generate ONLY the files that need to change. Return JSON with files array and su
     });
 
     // Prepare the full context with all files for Gemini
+    const allComponentFiles = currentFiles.map((f: any) => {
+      if (f.path.startsWith('app/components/') || f.path === 'app/page.tsx' || f.path === 'description.md') {
+        return `\nFile: ${f.path}\n\`\`\`\n${f.content}\n\`\`\``;
+      }
+      return '';
+    }).filter(Boolean).join('\n\n');
+
     const fullContext = `Current codebase has these files:
 ${currentFiles.map((f: any) => `- ${f.path}`).join('\n')}
 
 Here are ALL the component files in the project:
-${currentFiles.map((f: any) => {
-  if (f.path.startsWith('app/components/') || f.path === 'app/page.tsx' || f.path === 'description.md') {
-    return `\nFile: ${f.path}\n\`\`\`\n${f.content}\n\`\`\``;
-  }
-  return '';
-}).filter(Boolean).join('\n\n')}
+${allComponentFiles}
 
-**User's amendment request**: ${amendmentPrompt}
+---
 
-**CRITICAL**: 
-- Read the description.md file to understand the application
-- Ensure all imported components exist with the EXACT same name as the files in app/components/
-- Make ONLY the necessary changes to implement the user's request
-- Keep all other files, imports, and functionality unchanged
-- If you modify a component file name, update ALL imports that reference it`;
+**USER'S AMENDMENT REQUEST**: ${amendmentPrompt}
+
+Please make ONLY the changes requested by the user. Read the files above to understand the current structure before making any modifications.`;
 
     const completion = await gemini.models.generateContent({
       model: "gemini-2.5-flash",

@@ -23,6 +23,7 @@ interface SandboxResponse {
   error?: string;
   generationsRemaining?: number;
   upgradeRequired?: boolean;
+  lastModified?: number;
 }
 
 type ViewMode = 'preview' | 'code';
@@ -250,13 +251,15 @@ export default function Home() {
         setAmendmentPrompt('')
         setProgress(`✨ ${data.summary}`)
         
-        // Update sandbox data with new files - this will trigger iframe reload via key change
-        setSandboxData({
+        // Update sandbox data with new files
+        const updatedSandboxData = {
           ...sandboxData,
           files: data.files,
           url: data.url,
-          sandboxId: sandboxData.sandboxId // Preserve sandbox ID
-        })
+          sandboxId: sandboxData.sandboxId,
+          lastModified: Date.now() // Add timestamp to force iframe reload
+        }
+        setSandboxData(updatedSandboxData)
         
         // Force a complete reload of the preview
         setTimeout(() => {
@@ -579,7 +582,7 @@ export default function Home() {
               )}
               {sandboxData.url && (
                 <iframe 
-                  key={sandboxData.url}
+                  key={`${sandboxData.url}-${sandboxData.lastModified || 0}`}
                   src={`/api/proxy?url=${encodeURIComponent(sandboxData.url)}${sandboxData.token ? `&token=${encodeURIComponent(sandboxData.token)}` : ''}`}
                   className="flex-1 w-full border-0"
                   title="Website Preview"

@@ -32,6 +32,16 @@ export async function GET(req: Request) {
       redirect: 'follow'
     });
     
+    if (!response.ok) {
+      console.error('Failed to fetch:', fullUrl, 'Status:', response.status);
+      const errorText = await response.text();
+      console.error('Error response:', errorText.substring(0, 200));
+      return NextResponse.json(
+        { error: `Failed to fetch: ${response.status}` },
+        { status: response.status }
+      );
+    }
+    
     const contentType = response.headers.get('content-type') || '';
     console.log('Content-Type:', contentType, 'for', path || 'root');
     

@@ -4,6 +4,8 @@ import { OpenAI } from 'openai';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { supabaseAdmin } from '@/lib/supabase';
+import instructions from './systemPrompt';
+import { GoogleGenAI } from "@google/genai";
 import { 
   incrementUsage, 
   updateProject, 
@@ -14,6 +16,8 @@ import {
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_KEY,
 });
+
+const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_KEY });
 
 export async function POST(req: Request) {
   const startTime = Date.now();
@@ -145,7 +149,7 @@ Generate ONLY the files that need to change. Return JSON with files array and su
       max_tokens: maxTokens,
     });*/
 
-    const completion = await openai.chat.completions.create({
+    const completions = await openai.chat.completions.create({
       model: "gpt-4o",
       messages: [
         {
@@ -212,9 +216,39 @@ Generate ONLY the files that need to change. Return JSON with files array and su
       max_tokens: maxTokens,
     });
 
+    // Prepare the full context with all files for Gemini
+    const fullContext = `Current codebase has these files:
+${currentFiles.map((f: any) => `- ${f.path}`).join('\n')}
 
-    let responseText = completion.choices[0]?.message?.content || '';
-    tokensUsed = completion.usage?.total_tokens || 0;
+Here are ALL the component files in the project:
+${currentFiles.map((f: any) => {
+  if (f.path.startsWith('app/components/') || f.path === 'app/page.tsx' || f.path === 'description.md') {
+    return `\nFile: ${f.path}\n\`\`\`\n${f.content}\n\`\`\``;
+  }
+  return '';
+}).filter(Boolean).join('\n\n')}
+
+**User's amendment request**: ${amendmentPrompt}
+
+**CRITICAL**: 
+- Read the description.md file to understand the application
+- Ensure all imported components exist with the EXACT same name as the files in app/components/
+- Make ONLY the necessary changes to implement the user's request
+- Keep all other files, imports, and functionality unchanged
+- If you modify a component file name, update ALL imports that reference it`;
+
+    const completion = await gemini.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{text: fullContext}],
+      config:{systemInstruction: instructions.toString()}
+    });
+
+    let responseText = completion.text || '';
+    tokensUsed =  0;
+
+
+    /*let responseText = completion.choices[0]?.message?.content || '';
+    tokensUsed = completion.usage?.total_tokens || 0;*/
     
     // Parse JSON response
     let amendmentData: { files: Array<{ path: string; content: string }>, summary?: string };
@@ -241,6 +275,62 @@ Generate ONLY the files that need to change. Return JSON with files array and su
       }));
 
       console.log(`AI generated ${amendmentData.files.length} file updates`);
+
+      // Validate component imports match actual file names
+      const currentComponentFiles = currentFiles
+        .filter((f: any) => f.path.startsWith('app/components/'))
+        .map((f: any) => {
+          const fileName = f.path.replace('app/components/', '').replace('.tsx', '');
+          return fileName;
+        });
+
+      console.log('Current component files:', currentComponentFiles);
+
+      // Check if any modifications introduce new components that don't match
+      for (const file of amendmentData.files) {
+        if (file.path.startsWith('app/page.tsx')) {
+          const importMatches = file.content.match(/import\s+[\w\s,{}]+\s+from\s+['"]\.\/components\/(\w+)['"]/g);
+          if (importMatches) {
+            const importedComponents = importMatches.map(match => {
+              const componentMatch = match.match(/import\s+[\w\s,{}]+\s+from\s+['"]\.\/components\/(\w+)['"]/);
+              return componentMatch ? componentMatch[1] : null;
+            }).filter((comp): comp is string => comp !== null);
+            
+            const missingComponents = importedComponents.filter(comp => {
+              const exists = currentComponentFiles.includes(comp) || 
+                            amendmentData.files.some(f => f.path === `app/components/${comp}.tsx`);
+              return !exists;
+            });
+
+            if (missingComponents.length > 0) {
+              console.error(`❌ Missing components detected: ${missingComponents.join(', ')}`);
+              // Create placeholder components for missing ones
+              for (const componentName of missingComponents) {
+                const componentContent = `'use client'
+
+interface Props {
+  // Add props as needed
+}
+
+export default function ${componentName}({}: Props) {
+  return (
+    <div className="p-4 bg-white rounded-lg shadow-md">
+      <h3 className="text-lg font-semibold mb-2">${componentName}</h3>
+      <p className="text-gray-600">Component placeholder</p>
+    </div>
+  );
+}`;
+                
+                amendmentData.files.push({
+                  path: `app/components/${componentName}.tsx`,
+                  content: componentContent
+                });
+                console.log(`✅ Created missing component: ${componentName}.tsx`);
+              }
+            }
+          }
+        }
+      }
 
       // Validate: reject modifications to core template files
       const forbiddenFiles = [

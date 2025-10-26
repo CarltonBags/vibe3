@@ -243,13 +243,6 @@ export default function Home() {
       }
 
       if (data.success) {
-        // Update sandbox data with new files
-        setSandboxData({
-          ...sandboxData,
-          files: data.files,
-          url: data.url
-        })
-
         // Add to history
         setAmendmentHistory(prev => [...prev, amendmentPrompt])
         
@@ -257,14 +250,17 @@ export default function Home() {
         setAmendmentPrompt('')
         setProgress(`✨ ${data.summary}`)
         
-        // Force iframe reload to show changes
-        const iframe = document.querySelector('iframe[title="Preview"]') as HTMLIFrameElement
-        if (iframe) {
-          iframe.src = iframe.src
-        }
+        // Update sandbox data with new files - this will trigger iframe reload via key change
+        setSandboxData({
+          ...sandboxData,
+          files: data.files,
+          url: data.url,
+          sandboxId: sandboxData.sandboxId // Preserve sandbox ID
+        })
         
-        // Clear success message after a few seconds
+        // Force a complete reload of the preview
         setTimeout(() => {
+          // Clear success message
           setProgress('')
         }, 3000)
       }
@@ -564,13 +560,33 @@ export default function Home() {
 
           {/* Content */}
           {viewMode === 'preview' ? (
-            <iframe 
-              key={sandboxData.url}
-              src={`/api/proxy?url=${encodeURIComponent(sandboxData.url)}${sandboxData.token ? `&token=${encodeURIComponent(sandboxData.token)}` : ''}`}
-              className="flex-1 w-full border-0"
-              title="Website Preview"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
-            />
+            <>
+              {isAmending && (
+                <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                  <div className="bg-gray-900 rounded-lg p-6 flex flex-col items-center gap-4">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-vibe-gradient-to-br"></div>
+                    <p className="text-white text-sm">Applying changes...</p>
+                  </div>
+                </div>
+              )}
+              {!sandboxData.url && hasGenerated && (
+                <div className="flex-1 flex items-center justify-center bg-gray-900">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-vibe-gradient-to-br"></div>
+                    <p className="text-gray-400 text-sm">Loading preview...</p>
+                  </div>
+                </div>
+              )}
+              {sandboxData.url && (
+                <iframe 
+                  key={sandboxData.url}
+                  src={`/api/proxy?url=${encodeURIComponent(sandboxData.url)}${sandboxData.token ? `&token=${encodeURIComponent(sandboxData.token)}` : ''}`}
+                  className="flex-1 w-full border-0"
+                  title="Website Preview"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+                />
+              )}
+            </>
           ) : (
             <div className="flex-1 overflow-auto flex">
               {/* File Tree Sidebar */}

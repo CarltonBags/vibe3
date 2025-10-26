@@ -44,11 +44,11 @@ export async function GET(req: Request) {
       
       // Rewrite ALL URLs to go through our proxy with the bypass header
       html = html
-        // Script and link tags with absolute paths (/_next/...)
-        .replace(/href="(\/_next\/[^"]+)"/g, `href="${proxyPrefix}$1${tokenSuffix}"`)
-        .replace(/src="(\/_next\/[^"]+)"/g, `src="${proxyPrefix}$1${tokenSuffix}"`)
+        // Script and link tags with absolute paths (/_next/..., /grid.svg, etc.)
+        .replace(/href="(\/[^"]+)"/g, `href="${proxyPrefix}$1${tokenSuffix}"`)
+        .replace(/src="(\/[^"]+)"/g, `src="${proxyPrefix}$1${tokenSuffix}"`)
         // data-href for Next.js preloads
-        .replace(/data-href="(\/_next\/[^"]+)"/g, `data-href="${proxyPrefix}$1${tokenSuffix}"`)
+        .replace(/data-href="(\/[^"]+)"/g, `data-href="${proxyPrefix}$1${tokenSuffix}"`)
         // Handle srcSet
         .replace(/srcSet="([^"]+)"/g, (match, srcset) => {
           const rewritten = srcset.replace(/(\/_next\/[^\s,]+)/g, (url: string) => 

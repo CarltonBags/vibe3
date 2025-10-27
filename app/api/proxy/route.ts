@@ -96,9 +96,11 @@ export async function GET(req: Request) {
       js = js
         .replace(/__webpack_require__\.p\s*=\s*"[^"]*"/g, `__webpack_require__.p="${proxyPrefix}"`)
         .replace(/"assetPrefix":"[^"]*"/g, `"assetPrefix":"${proxyPrefix.replace('&path=/', '')}"`)
-        // Rewrite any hardcoded /_next/ paths
-        .replace(/"\/_next\//g, `"${proxyPrefix}_next/`)
-        .replace(/(['"])_next\//g, `$1${proxyPrefix}_next/`);
+        // Rewrite any hardcoded /_next/ paths (including CSS, fonts, etc.)
+        .replace(/["'`]\/_next\//g, (match) => match.replace('/_next/', `${proxyPrefix}_next/`))
+        .replace(/(['"])\/\/([^'"]+\.daytona\.works)/g, `$1${proxyPrefix}proxy$2`)
+        // Rewrite any absolute paths that might be CSS or other assets
+        .replace(/(url\s*\(["']?)(\/[^"')]+)(["']?\s*\))/g, `$1${proxyPrefix}$2${tokenSuffix}$3`);
       
       return new NextResponse(js, {
         status: 200,
@@ -116,10 +118,10 @@ export async function GET(req: Request) {
       const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=`;
       const tokenSuffix = token ? `&token=${encodeURIComponent(token)}` : '';
       
-      // Rewrite @import and url() paths
+      // Rewrite @import and url() paths (match any absolute path starting with /)
       css = css
-        .replace(/@import\s+url\(["']?(\/_next\/[^"')]+)["']?\)/g, `@import url("${proxyPrefix}$1${tokenSuffix}")`)
-        .replace(/url\(["']?(\/_next\/[^"')]+)["']?\)/g, `url("${proxyPrefix}$1${tokenSuffix}")`);
+        .replace(/@import\s+url\(["']?(\/[^"')]+)["']?\)/g, `@import url("${proxyPrefix}$1${tokenSuffix}")`)
+        .replace(/url\(["']?(\/[^"')]+)["']?\)/g, `url("${proxyPrefix}$1${tokenSuffix}")`);
       
       return new NextResponse(css, {
         status: 200,

@@ -404,36 +404,24 @@ export default function ${componentName}({}: Props) {
         await sandbox.fs.uploadFile(Buffer.from(file.content), filePath);
       }
 
-      // Hard restart Next.js dev server to clear cache and apply changes
-      console.log('Restarting Next.js dev server...');
+      // Hard restart Next.js - rebuild and restart production server
+      console.log('Rebuilding Next.js for production...');
       await sandbox.process.executeCommand('cd /workspace && pkill -9 node || true');
-      //await sandbox.process.executeCommand('cd /workspace && rm -rf .next || true');
+      await sandbox.process.executeCommand('cd /workspace && rm -rf .next || true');
       await new Promise(resolve => setTimeout(resolve, 2000));
-      console.log('Building Next.js site...');
-await sandbox.process.executeCommand('cd /workspace && npm run build');
+
+      // Build for production
+      console.log('Running npm run build...');
+      const buildResult = await sandbox.process.executeCommand('cd /workspace && npm run build 2>&1 || true');
+      console.log('Build output:', buildResult.result?.substring(0, 500));
+      
+      // Start production server
+      console.log('Starting production server...');
       await sandbox.process.executeCommand('cd /workspace && nohup npm run start > /tmp/next.log 2>&1 &');
       
-
-      // Wait longer for server to fully restart (amendment case)
-      console.log('Waiting for Next.js dev server...');
-
-      const waitUntilReady = async () => {
-        for (let i = 0; i < 60; i++) {
-          try {
-            const html = await fetch('http://localhost:3000');
-            const css = await fetch('http://localhost:3000/_next/static/css/app/layout.css');
-            if (html.ok && css.ok) return true;
-          } catch {}
-          await new Promise(r => setTimeout(r, 1000));
-        }
-        return false;
-      };
-
-      if (await waitUntilReady()) {
-        console.log('✅ Next.js fully built.');
-      } else {
-        console.warn('⚠️ Next.js not ready after 60s.');
-      }
+      // Wait for production server to be ready
+      console.log('Waiting for server to be ready...');
+      await new Promise(resolve => setTimeout(resolve, 15000));
 
       // Get the preview URL (should be the same)
       const previewLink = await sandbox.getPreviewLink(3000);

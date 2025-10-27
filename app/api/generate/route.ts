@@ -928,13 +928,28 @@ export default function ${componentName}({}: Props) {
         }
       }
       
-      // Clear any existing cache and start Next.js dev server
-      console.log('Starting Next.js dev server...');
+      // Clear any existing cache and build for production
+      console.log('Building Next.js for production...');
       await sandbox.process.executeCommand('cd /workspace && rm -rf .next node_modules/.cache || true');
-      await sandbox.process.executeCommand('cd /workspace && nohup npm run dev > /tmp/next.log 2>&1 &');
       
-      // Wait for server to start and check logs
-      await new Promise(resolve => setTimeout(resolve, 12000));
+      // Build the site (capture output and errors)
+      console.log('Running npm run build...');
+      const buildResult = await sandbox.process.executeCommand('cd /workspace && npm run build 2>&1 || true');
+      console.log('Build output:', buildResult.result?.substring(0, 500));
+      
+      // Check if build succeeded
+      if (buildResult.result?.includes('Error:') || buildResult.result?.includes('Failed to compile')) {
+        console.error('Build failed, checking logs...');
+        const errorLogs = await sandbox.process.executeCommand('cd /workspace && cat /tmp/next.log 2>&1 || echo "No logs"');
+        console.log('Build errors:', errorLogs.result);
+      }
+      
+      // Start production server
+      console.log('Starting production server...');
+      await sandbox.process.executeCommand('cd /workspace && nohup npm run start > /tmp/next.log 2>&1 &');
+      
+      // Wait for server to start
+      await new Promise(resolve => setTimeout(resolve, 15000));
       
       // Prepare complete file list for GitHub-ready project (declare before auto-fix loop)
       const allFiles = [

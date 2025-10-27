@@ -73,6 +73,18 @@ export async function GET(req: Request) {
     }
     
     if (!response || !response.ok) {
+      // Gracefully handle 404s for CSS/JS files during Next.js rebuilds
+      if (response?.status === 404 && path && (path.includes('_next') || path.endsWith('.css') || path.endsWith('.js'))) {
+        console.log(`Gracefully handling missing Next.js asset: ${path}`);
+        return new NextResponse('', {
+          status: 200,
+          headers: {
+            'Content-Type': path.endsWith('.css') ? 'text/css' : 'application/javascript',
+            'Cache-Control': 'no-cache',
+          },
+        });
+      }
+      
       console.error('Failed to fetch after retries:', fullUrl, 'Status:', response?.status || 'no response');
       let errorText = '';
       if (response) {

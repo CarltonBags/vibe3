@@ -78,13 +78,13 @@ export async function GET(req: Request) {
         })
         // CRITICAL: Rewrite inline styles with url() references (e.g., bg-[url('/grid.svg')])
         .replace(/style="([^"]*)"/g, (match, styles) => {
-          const rewritten = styles.replace(/url\(['"]?(\/[^'"]+)['"]?\)/g, (_, path) => 
+          const rewritten = styles.replace(/url\(['"]?(\/[^'"]+)['"]?\)/g, (_: string, path: string) => 
             `url('${proxyPrefix}${path.substring(1)}${tokenSuffix}')`
           );
           return `style="${rewritten}"`;
         })
         // Also handle Tailwind arbitrary values like bg-[url('/grid.svg')]
-        .replace(/(\w+)-\[url\(['"]?(\/[^'"]+)['"]?\)\]/g, (match, prop, path) => 
+        .replace(/(\w+)-\[url\(['"]?(\/[^'"]+)['"]?\)\]/g, (match: string, prop: string, path: string) => 
           `${prop}-[url('${proxyPrefix}${path.substring(1)}${tokenSuffix}')]`
         );
       

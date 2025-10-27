@@ -525,13 +525,23 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
     });
 
 
+    console.log('🤖 Calling Gemini API...');
     const completion = await gemini.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [{text: prompt}],
       config:{systemInstruction: instruction.toString()}
     });
+    console.log('✅ Gemini API call completed');
 
-    let responseText = completion.text || '';
+    // Access response text correctly for Gemini SDK
+    let responseText = '';
+    try {
+      responseText = completion.response?.text() || '';
+    } catch (e) {
+      console.error('Failed to extract text from Gemini response:', e);
+      // Fallback
+      responseText = JSON.stringify(completion);
+    }
     
     // Log the raw response for debugging
     console.log('📝 Raw Gemini response (first 500 chars):', responseText.substring(0, 500));

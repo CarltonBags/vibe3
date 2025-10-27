@@ -407,13 +407,33 @@ export default function ${componentName}({}: Props) {
       // Hard restart Next.js dev server to clear cache and apply changes
       console.log('Restarting Next.js dev server...');
       await sandbox.process.executeCommand('cd /workspace && pkill -9 node || true');
-      await sandbox.process.executeCommand('cd /workspace && rm -rf .next || true');
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      await sandbox.process.executeCommand('cd /workspace && nohup npm run dev > /tmp/next.log 2>&1 &');
+      //await sandbox.process.executeCommand('cd /workspace && rm -rf .next || true');
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      console.log('Building Next.js site...');
+await sandbox.process.executeCommand('cd /workspace && npm run build');
+      await sandbox.process.executeCommand('cd /workspace && nohup npm run start > /tmp/next.log 2>&1 &');
       
+
       // Wait longer for server to fully restart (amendment case)
-      console.log('Waiting for Next.js to rebuild...');
-      await new Promise(resolve => setTimeout(resolve, 15000));
+      console.log('Waiting for Next.js dev server...');
+
+      const waitUntilReady = async () => {
+        for (let i = 0; i < 60; i++) {
+          try {
+            const html = await fetch('http://localhost:3000');
+            const css = await fetch('http://localhost:3000/_next/static/css/app/layout.css');
+            if (html.ok && css.ok) return true;
+          } catch {}
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        return false;
+      };
+
+      if (await waitUntilReady()) {
+        console.log('✅ Next.js fully built.');
+      } else {
+        console.warn('⚠️ Next.js not ready after 60s.');
+      }
 
       // Get the preview URL (should be the same)
       const previewLink = await sandbox.getPreviewLink(3000);

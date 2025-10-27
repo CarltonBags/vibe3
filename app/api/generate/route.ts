@@ -98,7 +98,7 @@ export async function POST(req: Request) {
     }
 
     // Cap at model's maximum (gpt-4o-mini supports max 16384 completion tokens)
-    const maxTokens = Math.min(userWithTier.tier.max_tokens_per_generation, 16384);
+    const maxTokens = Math.min(userWithTier.tier.max_tokens_per_generation, 100000);
 
     
     // Step 1: Generate Next.js project structure using OpenAI

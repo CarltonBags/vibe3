@@ -24,6 +24,7 @@ interface SandboxResponse {
   generationsRemaining?: number;
   upgradeRequired?: boolean;
   lastModified?: number;
+  tokensUsed?: number;
 }
 
 type ViewMode = 'preview' | 'code';
@@ -257,7 +258,8 @@ export default function Home() {
           files: data.files,
           url: data.url,
           sandboxId: sandboxData.sandboxId,
-          lastModified: Date.now() // Add timestamp to force iframe reload
+          lastModified: Date.now(), // Add timestamp to force iframe reload
+          tokensUsed: data.tokensUsed || sandboxData.tokensUsed // Preserve or update token count
         }
         setSandboxData(updatedSandboxData)
         
@@ -497,6 +499,13 @@ export default function Home() {
                     >
                       Open in New Tab →
                     </button>
+                    {sandboxData.tokensUsed && (
+                      <div className="mt-2 text-center">
+                        <p className="text-gray-400 text-xs">
+                          Tokens used: <span className="text-purple-400 font-medium">{sandboxData.tokensUsed.toLocaleString()}</span>
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 

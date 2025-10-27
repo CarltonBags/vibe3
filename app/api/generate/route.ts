@@ -530,7 +530,13 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
     });
 
     let responseText = completion.text || '';
-    tokensUsed =  0;
+    
+    // Try to get token usage from Gemini response
+    // Gemini doesn't expose usage like OpenAI, so we estimate
+    tokensUsed = Math.ceil(responseText.length / 4); // Rough estimate: 1 token ≈ 4 characters
+    
+    // Log for debugging
+    console.log(`Estimated tokens used: ${tokensUsed}, response length: ${responseText.length}`);
     
     // Parse JSON response
     let filesData: { files: Array<{ path: string; content: string }> };
@@ -1112,7 +1118,8 @@ Return JSON:
         token: previewLink.token,
         files: allFiles,
         generationsRemaining: limits.generationsRemaining - 1,
-        message: `Next.js project created with ${allFiles.length} files (GitHub-ready)`
+        message: `Next.js project created with ${allFiles.length} files (GitHub-ready)`,
+        tokensUsed
       });
 
     } catch (execError) {

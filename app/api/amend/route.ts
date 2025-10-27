@@ -243,7 +243,13 @@ Please make ONLY the changes requested by the user. Read the files above to unde
     });
 
     let responseText = completion.text || '';
-    tokensUsed =  0;
+    
+    // Try to get token usage from Gemini response
+    // Gemini doesn't expose usage like OpenAI, so we estimate
+    tokensUsed = Math.ceil(responseText.length / 4); // Rough estimate: 1 token ≈ 4 characters
+    
+    // Log for debugging
+    console.log(`Estimated tokens used for amendment: ${tokensUsed}, response length: ${responseText.length}`);
 
 
     /*let responseText = completion.choices[0]?.message?.content || '';

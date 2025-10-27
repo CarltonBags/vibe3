@@ -542,7 +542,7 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
     console.log(`Estimated tokens used: ${tokensUsed}, response length: ${responseText.length}`);
     
     // Parse JSON response
-    let filesData: { files: Array<{ path: string; content: string }> };
+    let filesData: { files: Array<{ path: string; content: string }> } | null = null;
     try {
       // Clean markdown formatting if present
       let cleanedResponse = responseText
@@ -669,31 +669,50 @@ export default function ${componentName}({}: Props) {
       
     } catch (parseError) {
       console.error('❌ Failed to parse AI response as JSON:', parseError);
-      console.log('Falling back to single file mode');
+      console.log('⚠️ CRITICAL: Parse error detected. Response text:', responseText.substring(0, 500));
       
-      // Fallback: treat entire response as single page.tsx file
-      // But first try to extract code if it looks like JSON
-      let fallbackContent = responseText;
+      // Try multiple extraction strategies
+      console.log('🔧 Attempting emergency JSON extraction...');
       
-      if (fallbackContent.trim().startsWith('{') && fallbackContent.includes('"content"')) {
-        console.log('Attempting to extract code from malformed JSON...');
-        const contentMatch = fallbackContent.match(/"content":\s*"((?:[^"\\]|\\[\s\S])*)"/);
-        if (contentMatch) {
-          fallbackContent = contentMatch[1]
-            .replace(/\\n/g, '\n')
-            .replace(/\\t/g, '\t')
-            .replace(/\\"/g, '"')
-            .replace(/\\\\/g, '\\');
-          console.log('✅ Extracted content from malformed JSON');
+      // Strategy 1: Try to find JSON object in the response
+      const jsonObjMatch = responseText.match(/\{[\s\S]*"files"[\s\S]*\}/);
+      if (jsonObjMatch) {
+        try {
+          filesData = JSON.parse(jsonObjMatch[0]);
+          console.log('✅ Successfully extracted JSON using regex strategy');
+        } catch (e) {
+          console.error('❌ Regex extraction also failed:', e);
         }
       }
       
-      filesData = {
-        files: [{
-          path: 'app/page.tsx',
-          content: fallbackContent
-        }]
-      };
+      // Strategy 2: If still failed, try to find individual file entries
+      if (!filesData) {
+        console.log('🔧 Attempting file-by-file extraction...');
+        const filesPattern = /"files"\s*:\s*\[([\s\S]*)\]/;
+        const filesMatch = responseText.match(filesPattern);
+        
+        if (filesMatch) {
+          const filesContent = '[' + filesMatch[1] + ']';
+          try {
+            const extractedFiles = JSON.parse(filesContent);
+            filesData = { files: extractedFiles };
+            console.log('✅ Successfully extracted files array');
+          } catch (e) {
+            console.error('❌ Files extraction failed:', e);
+          }
+        }
+      }
+      
+      // Last resort: return error instead of raw text
+      if (!filesData) {
+        console.error('❌ All extraction strategies failed');
+        throw new Error('Failed to parse AI response: Invalid JSON structure. Please try again.');
+      }
+    }
+    
+    // Ensure filesData is valid before proceeding
+    if (!filesData || !filesData.files || filesData.files.length === 0) {
+      throw new Error('Failed to parse AI response: No valid files found');
     }
 
     // Step 2: Create Daytona sandbox

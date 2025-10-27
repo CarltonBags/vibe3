@@ -32,7 +32,20 @@ export async function POST(req: Request) {
 
   try {
     console.log('🚀 POST /api/generate - Starting generation request');
-    const { prompt, projectId: existingProjectId } = await req.json();
+    
+    let requestBody;
+    try {
+      requestBody = await req.json();
+      console.log('✅ Request body parsed successfully');
+    } catch (e) {
+      console.error('❌ Failed to parse request body:', e);
+      return NextResponse.json(
+        { error: 'Invalid request body' },
+        { status: 400 }
+      );
+    }
+    
+    const { prompt, projectId: existingProjectId } = requestBody;
     console.log('📝 Prompt received:', prompt?.substring(0, 100));
 
     if (!prompt) {
@@ -43,6 +56,7 @@ export async function POST(req: Request) {
     }
 
     // Get authenticated user from cookies
+    console.log('🔐 Getting user from cookies...');
     const cookieStore = await cookies();
     
     const supabase = createServerClient(
@@ -65,7 +79,7 @@ export async function POST(req: Request) {
     )
 
     const { data: { session } } = await supabase.auth.getSession();
-    console.log('Generate API: Session check:', session ? 'Authenticated' : 'Not authenticated');
+    console.log('🔐 Session check:', session ? 'Authenticated' : 'Not authenticated');
     
     if (!session) {
       return NextResponse.json(
@@ -75,10 +89,12 @@ export async function POST(req: Request) {
     }
 
     const userId = session.user.id;
-    console.log('Generate API: User:', userId);
+    console.log('✅ User authenticated:', userId);
 
     // Check user limits
+    console.log('🔍 Checking user limits...');
     const limits = await checkUserLimits(userId);
+    console.log('✅ Limits checked:', limits.canGenerate);
     if (!limits.canGenerate) {
       return NextResponse.json(
         { 
@@ -728,6 +744,7 @@ export default function ${componentName}({}: Props) {
     }
 
     // Step 2: Create Daytona sandbox
+    console.log('🏗️ Creating Daytona sandbox...');
     const daytona = new Daytona({ 
       apiKey: process.env.DAYTONA_KEY || '',
       apiUrl: process.env.DAYTONA_URL || 'https://api.daytona.io'
@@ -735,6 +752,7 @@ export default function ${componentName}({}: Props) {
 
     // Create sandbox with Node.js environment (auto-provisions from Docker Hub)
     // Setting public: true makes the sandbox accessible without authentication
+    console.log('📦 Provisioning sandbox with image: node:20-alpine');
     const sandbox = await daytona.create({
       image: 'node:20-alpine',
       public: true,
@@ -744,6 +762,7 @@ export default function ${componentName}({}: Props) {
       }
     });
     const sandboxId = sandbox.id;
+    console.log('✅ Sandbox created:', sandboxId);
 
     try {
       // Read template files

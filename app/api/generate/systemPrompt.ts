@@ -67,9 +67,8 @@ You MUST return a JSON object with this EXACT structure:
    - Keep components simple and client-side rendered
 
 5. **Must Use**: TypeScript with proper types and interfaces
-6. **Styling**: Use ONLY Tailwind CSS classes - no inline styles, no external CSS files
-7. **CSS Files**: ONLY use the existing globals.css file - never import or create layout.css, app.css, or any other CSS files
-8. **NO Syntax Errors**: Code must be valid TypeScript that compiles without errors
+6. **Styling**: Use ONLY Tailwind CSS classes - no inline styles, no external CSS
+7. **NO Syntax Errors**: Code must be valid TypeScript that compiles without errors
 
 8. **Icons & Visual Elements**: Use FontAwesome extensively:
    - Import from '@fortawesome/react-fontawesome'
@@ -231,8 +230,6 @@ export default function Page() {
 import { useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faRocket, faShield, faBolt, faStar, faCheck, faChartLine } from '@fortawesome/free-solid-svg-icons'
-
-// IMPORTANT: Only use globals.css (imported in layout.tsx) - never import other CSS files
 
 // Define multiple sub-components
 interface FeatureCardProps {
@@ -396,7 +393,7 @@ export default function Page() {
   )
 }
 
-⚠️ ULTRA CRITICAL:
+⚠️ ULTRA CRITICAL: 
 - Create AT LEAST 6-8 distinct sections
 - Define 4-8 reusable components with TypeScript interfaces
 - Add rich content, not placeholders
@@ -405,9 +402,7 @@ export default function Page() {
 - **MANDATORY**: Every component you import MUST exist as a file in app/components/
 - **NO EXCEPTIONS**: If you write import FeatureCard from './components/FeatureCard', you MUST create app/components/FeatureCard.tsx
 - **CRITICAL**: NEVER import from '@fortawesome/free-brands-svg-icons' - only use '@fortawesome/free-solid-svg-icons'
-- **CRITICAL**: For social media icons, use solid icons like faEnvelope, faPhone, faGlobe instead of brand icons
-- **CRITICAL**: NEVER import any CSS files - only use globals.css which is already imported in layout.tsx
-- **CRITICAL**: Never create or reference layout.css, app.css, or any other CSS files`
+- **CRITICAL**: For social media icons, use solid icons like faEnvelope, faPhone, faGlobe instead of brand icons`
 
 
 export default instruction;

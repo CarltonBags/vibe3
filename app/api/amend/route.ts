@@ -281,19 +281,6 @@ Please make ONLY the changes requested by the user. Read the files above to unde
 
       console.log(`AI generated ${amendmentData.files.length} file updates`);
 
-      // CRITICAL: Remove any CSS imports that the AI might have added
-      console.log('🧹 Cleaning CSS imports and files in amendments...');
-      amendmentData.files = amendmentData.files
-        .filter(file => !file.path.endsWith('.css'))  // Remove any CSS files
-        .map(file => ({
-          ...file,
-          content: file.content
-            .replace(/import\s+['"][^'"]+\.css['"]/g, '')  // Remove CSS imports
-            .replace(/import\s+[^;]+from\s+['"][^'"]+\.css['"]/g, '')  // Remove CSS imports with 'from'
-            .replace(/require\(['"][^'"]+\.css['']\)/g, '')  // Remove CSS requires
-        }));
-      console.log('✅ CSS imports and files cleaned');
-
       // Validate component imports match actual file names
       const currentComponentFiles = currentFiles
         .filter((f: any) => f.path.startsWith('app/components/'))

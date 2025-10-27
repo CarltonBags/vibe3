@@ -588,20 +588,7 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
       });
 
       console.log(`✅ Successfully parsed ${filesData.files.length} files from AI response`);
-
-      // CRITICAL: Remove any CSS imports that the AI might have added
-      console.log('🧹 Cleaning CSS imports and files...');
-      filesData.files = filesData.files
-        .filter(file => !file.path.endsWith('.css'))  // Remove any CSS files
-        .map(file => ({
-          ...file,
-          content: file.content
-            .replace(/import\s+['"][^'"]+\.css['"]/g, '')  // Remove CSS imports
-            .replace(/import\s+[^;]+from\s+['"][^'"]+\.css['"]/g, '')  // Remove CSS imports with 'from'
-            .replace(/require\(['"][^'"]+\.css['']\)/g, '')  // Remove CSS requires
-        }));
-      console.log('✅ CSS imports and files cleaned');
-
+      
       // Validate that all imports have corresponding files BEFORE uploading
       const pageFile = filesData.files.find(f => f.path === 'app/page.tsx');
       if (pageFile) {

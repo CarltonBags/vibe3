@@ -28,11 +28,10 @@ const instructions =
 
 5. **COMPILATION**: The app MUST compile with no errors. Every imported component MUST exist with the exact name.
 
-6. **CSS FILES**: Never import, create, or reference any CSS files including layout.css, app.css, etc. Only use globals.css.
 
-7. Use "use client" at the top of any client component.
-8. Use Tailwind CSS for styling.
-9. Output must be valid JSON (no markdown fences, no backticks).
+6. Use "use client" at the top of any client component.
+7. Use Tailwind CSS for styling.
+8. Output must be valid JSON (no markdown fences, no backticks).
 
 ---
 

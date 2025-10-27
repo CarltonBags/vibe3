@@ -10,8 +10,8 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'URL is required' }, { status: 400 });
   }
 
-  // Construct the full URL
-  const fullUrl = path ? `${targetUrl}${path}` : targetUrl;
+  // Construct the full URL - ensure path starts with / if provided
+  const fullUrl = path ? `${targetUrl}${path.startsWith('/') ? path : '/' + path}` : targetUrl;
 
   try {
     // Set headers to bypass Daytona warning
@@ -49,21 +49,21 @@ export async function GET(req: Request) {
     if (contentType.includes('text/html')) {
       let html = await response.text();
       const baseUrl = new URL(targetUrl);
-      const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=`;
+      const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=/`;
       const tokenSuffix = token ? `&token=${encodeURIComponent(token)}` : '';
       
       // Rewrite ALL URLs to go through our proxy with the bypass header
       html = html
         // Script and link tags with absolute paths (/_next/..., /grid.svg, etc.)
-        // Remove leading slash to avoid double slashes
-        .replace(/href="(\/[^"]+)"/g, (_, path) => `href="${proxyPrefix}${path.substring(1)}${tokenSuffix}"`)
-        .replace(/src="(\/[^"]+)"/g, (_, path) => `src="${proxyPrefix}${path.substring(1)}${tokenSuffix}"`)
+        // proxyPrefix ends with &path=/, so always remove leading slash
+        .replace(/href="(\/[^"]+)"/g, (match, path) => `href="${proxyPrefix}${path.substring(1)}${tokenSuffix}"`)
+        .replace(/src="(\/[^"]+)"/g, (match, path) => `src="${proxyPrefix}${path.substring(1)}${tokenSuffix}"`)
         // data-href for Next.js preloads
-        .replace(/data-href="(\/[^"]+)"/g, (_, path) => `data-href="${proxyPrefix}${path.substring(1)}${tokenSuffix}"`)
+        .replace(/data-href="(\/[^"]+)"/g, (match, path) => `data-href="${proxyPrefix}${path.substring(1)}${tokenSuffix}"`)
         // Handle srcSet
         .replace(/srcSet="([^"]+)"/g, (match, srcset) => {
-          const rewritten = srcset.replace(/\/([^\s,]+)/g, (url: string, path: string) => 
-            `${proxyPrefix}${path}${tokenSuffix}`
+          const rewritten = srcset.replace(/\/([^\s,]+)/g, (url: string, path: string) =>
+            `${proxyPrefix}${path.substring(1)}${tokenSuffix}`
           );
           return `srcSet="${rewritten}"`;
         })
@@ -72,19 +72,19 @@ export async function GET(req: Request) {
           // Rewrite __webpack_require__.p assignments
           const rewrittenContent = content
             .replace(/__webpack_require__\.p\s*=\s*"[^"]*"/g, `__webpack_require__.p="${proxyPrefix}"`)
-            .replace(/"assetPrefix"\s*:\s*"[^"]*"/g, `"assetPrefix":"${proxyPrefix.slice(0, -6)}"`)
+            .replace(/"assetPrefix"\s*:\s*"[^"]*"/g, `"assetPrefix":"${proxyPrefix.slice(0, -7)}"`)
             .replace(/"basePath"\s*:\s*"[^"]*"/g, `"basePath":""`);
           return `<script${attrs}>${rewrittenContent}</script>`;
         })
         // CRITICAL: Rewrite inline styles with url() references (e.g., bg-[url('/grid.svg')])
         .replace(/style="([^"]*)"/g, (match, styles) => {
-          const rewritten = styles.replace(/url\(['"]?(\/[^'"]+)['"]?\)/g, (_: string, path: string) => 
+          const rewritten = styles.replace(/url\(['"]?(\/[^'"]+)['"]?\)/g, (_: string, path: string) =>
             `url('${proxyPrefix}${path.substring(1)}${tokenSuffix}')`
           );
           return `style="${rewritten}"`;
         })
         // Also handle Tailwind arbitrary values like bg-[url('/grid.svg')]
-        .replace(/(\w+)-\[url\(['"]?(\/[^'"]+)['"]?\)\]/g, (match: string, prop: string, path: string) => 
+        .replace(/(\w+)-\[url\(['"]?(\/[^'"]+)['"]?\)\]/g, (match: string, prop: string, path: string) =>
           `${prop}-[url('${proxyPrefix}${path.substring(1)}${tokenSuffix}')]`
         );
       
@@ -107,12 +107,14 @@ export async function GET(req: Request) {
       // Rewrite webpack chunk URLs - ensure paths start with /
       js = js
         .replace(/__webpack_require__\.p\s*=\s*"[^"]*"/g, `__webpack_require__.p="${proxyPrefix}"`)
-        .replace(/"assetPrefix":"[^"]*"/g, `"assetPrefix":"${proxyPrefix.replace('&path=/', '')}"`)
+        .replace(/"assetPrefix":"[^"]*"/g, `"assetPrefix":"${proxyPrefix.slice(0, -7)}"`)
         // Rewrite any hardcoded /_next/ paths (including CSS, fonts, etc.)
         .replace(/["'`]\/_next\//g, (match) => match.replace('/_next/', `${proxyPrefix}_next/`))
         .replace(/(['"])\/\/([^'"]+\.daytona\.works)/g, `$1${proxyPrefix}proxy$2`)
         // Rewrite any absolute paths that might be CSS or other assets
-        .replace(/(url\s*\(["']?)(\/[^"')]+)(["']?\s*\))/g, `$1${proxyPrefix}$2${tokenSuffix}$3`);
+        .replace(/(url\s*\(["']?)(\/[^"')]+)(["']?\s*\))/g, (match, start, path, end) =>
+          `${start}${proxyPrefix}${path.substring(1)}${tokenSuffix}${end}`
+        );
       
       return new NextResponse(js, {
         status: 200,
@@ -127,13 +129,13 @@ export async function GET(req: Request) {
     if (contentType.includes('text/css') || contentType.includes('css')) {
       let css = await response.text();
       const baseUrl = new URL(targetUrl);
-      const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=`;
+      const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=/`;
       const tokenSuffix = token ? `&token=${encodeURIComponent(token)}` : '';
       
       // Rewrite @import and url() paths (match any absolute path starting with /)
       css = css
-        .replace(/@import\s+url\(["']?(\/[^"')]+)["']?\)/g, `@import url("${proxyPrefix}$1${tokenSuffix}")`)
-        .replace(/url\(["']?(\/[^"')]+)["']?\)/g, `url("${proxyPrefix}$1${tokenSuffix}")`);
+        .replace(/@import\s+url\(["']?(\/[^"')]+)["']?\)/g, (match, path) => `@import url("${proxyPrefix}${path.substring(1)}${tokenSuffix}")`)
+        .replace(/url\(["']?(\/[^"')]+)["']?\)/g, (match, path) => `url("${proxyPrefix}${path.substring(1)}${tokenSuffix}")`);
       
       return new NextResponse(css, {
         status: 200,

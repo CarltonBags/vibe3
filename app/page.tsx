@@ -595,7 +595,7 @@ export default function Home() {
                   src={`/api/proxy?url=${encodeURIComponent(sandboxData.url)}${sandboxData.token ? `&token=${encodeURIComponent(sandboxData.token)}` : ''}`}
                   className="flex-1 w-full border-0"
                   title="Website Preview"
-                  sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
                 />
               )}
             </>

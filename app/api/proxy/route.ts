@@ -119,7 +119,7 @@ export async function GET(req: Request) {
       // Rewrite @import and url() paths
       css = css
         .replace(/@import\s+url\(["']?(\/_next\/[^"')]+)["']?\)/g, `@import url("${proxyPrefix}$1${tokenSuffix}")`)
-        .replace(/url\(["']?(\/[^"')]+)["']?\)/g, `url("${proxyPrefix}$1${tokenSuffix}")`);;
+        .replace(/url\(["']?(\/_next\/[^"')]+)["']?\)/g, `url("${proxyPrefix}$1${tokenSuffix}")`);
       
       return new NextResponse(css, {
         status: 200,

@@ -531,6 +531,9 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
 
     let responseText = completion.text || '';
     
+    // Log the raw response for debugging
+    console.log('📝 Raw Gemini response (first 500 chars):', responseText.substring(0, 500));
+    
     // Try to get token usage from Gemini response
     // Gemini doesn't expose usage like OpenAI, so we estimate
     tokensUsed = Math.ceil(responseText.length / 4); // Rough estimate: 1 token ≈ 4 characters
@@ -547,8 +550,18 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
         .replace(/```\n?/g, '')
         .trim();
       
+      // Try to extract JSON if it's embedded in text
+      const jsonMatch = cleanedResponse.match(/\{[\s\S]*"files"[\s\S]*\}/);
+      if (jsonMatch) {
+        cleanedResponse = jsonMatch[0];
+      }
+      
+      console.log('🧹 Cleaned response (first 200 chars):', cleanedResponse.substring(0, 200));
+      
       // Try to parse as JSON
       filesData = JSON.parse(cleanedResponse);
+      
+      console.log('✅ Successfully parsed JSON, found files:', filesData.files?.length);
       
       if (!filesData.files || !Array.isArray(filesData.files)) {
         throw new Error('Invalid response format: missing or invalid files array');

@@ -550,14 +550,8 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
     console.log('✅ Gemini API call completed');
 
     // Access response text correctly for Gemini SDK
-    let responseText = '';
-    try {
-      responseText = completion.response?.text() || '';
-    } catch (e) {
-      console.error('Failed to extract text from Gemini response:', e);
-      // Fallback
-      responseText = JSON.stringify(completion);
-    }
+    let responseText = completion.text || '';
+    console.log('📝 Response text length:', responseText.length);
     
     // Log the raw response for debugging
     console.log('📝 Raw Gemini response (first 500 chars):', responseText.substring(0, 500));

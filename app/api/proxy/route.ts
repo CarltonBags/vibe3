@@ -55,14 +55,15 @@ export async function GET(req: Request) {
       // Rewrite ALL URLs to go through our proxy with the bypass header
       html = html
         // Script and link tags with absolute paths (/_next/..., /grid.svg, etc.)
-        .replace(/href="(\/[^"]+)"/g, `href="${proxyPrefix}$1${tokenSuffix}"`)
-        .replace(/src="(\/[^"]+)"/g, `src="${proxyPrefix}$1${tokenSuffix}"`)
+        // Remove leading slash to avoid double slashes
+        .replace(/href="(\/[^"]+)"/g, (_, path) => `href="${proxyPrefix}${path.substring(1)}${tokenSuffix}"`)
+        .replace(/src="(\/[^"]+)"/g, (_, path) => `src="${proxyPrefix}${path.substring(1)}${tokenSuffix}"`)
         // data-href for Next.js preloads
-        .replace(/data-href="(\/[^"]+)"/g, `data-href="${proxyPrefix}$1${tokenSuffix}"`)
+        .replace(/data-href="(\/[^"]+)"/g, (_, path) => `data-href="${proxyPrefix}${path.substring(1)}${tokenSuffix}"`)
         // Handle srcSet
         .replace(/srcSet="([^"]+)"/g, (match, srcset) => {
-          const rewritten = srcset.replace(/(\/_next\/[^\s,]+)/g, (url: string) => 
-            `${proxyPrefix}${url}${tokenSuffix}`
+          const rewritten = srcset.replace(/\/([^\s,]+)/g, (url: string, path: string) => 
+            `${proxyPrefix}${path}${tokenSuffix}`
           );
           return `srcSet="${rewritten}"`;
         })
@@ -74,7 +75,18 @@ export async function GET(req: Request) {
             .replace(/"assetPrefix"\s*:\s*"[^"]*"/g, `"assetPrefix":"${proxyPrefix.slice(0, -6)}"`)
             .replace(/"basePath"\s*:\s*"[^"]*"/g, `"basePath":""`);
           return `<script${attrs}>${rewrittenContent}</script>`;
-        });
+        })
+        // CRITICAL: Rewrite inline styles with url() references (e.g., bg-[url('/grid.svg')])
+        .replace(/style="([^"]*)"/g, (match, styles) => {
+          const rewritten = styles.replace(/url\(['"]?(\/[^'"]+)['"]?\)/g, (_, path) => 
+            `url('${proxyPrefix}${path.substring(1)}${tokenSuffix}')`
+          );
+          return `style="${rewritten}"`;
+        })
+        // Also handle Tailwind arbitrary values like bg-[url('/grid.svg')]
+        .replace(/(\w+)-\[url\(['"]?(\/[^'"]+)['"]?\)\]/g, (match, prop, path) => 
+          `${prop}-[url('${proxyPrefix}${path.substring(1)}${tokenSuffix}')]`
+        );
       
       return new NextResponse(html, {
         status: 200,

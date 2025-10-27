@@ -31,7 +31,9 @@ export async function POST(req: Request) {
   let tokensUsed = 0;
 
   try {
+    console.log('🚀 POST /api/generate - Starting generation request');
     const { prompt, projectId: existingProjectId } = await req.json();
+    console.log('📝 Prompt received:', prompt?.substring(0, 100));
 
     if (!prompt) {
       return NextResponse.json(
@@ -1181,7 +1183,8 @@ Return JSON:
     }
 
   } catch (error) {
-    console.error('API error:', error);
+    console.error('❌ API error in /api/generate:', error);
+    console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
     
     // Log failed generation if we have a user session
     try {

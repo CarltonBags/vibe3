@@ -411,8 +411,9 @@ export default function ${componentName}({}: Props) {
       await new Promise(resolve => setTimeout(resolve, 3000));
       await sandbox.process.executeCommand('cd /workspace && nohup npm run dev > /tmp/next.log 2>&1 &');
       
-      // Wait for server to fully restart
-      await new Promise(resolve => setTimeout(resolve, 12000));
+      // Wait longer for server to fully restart (amendment case)
+      console.log('Waiting for Next.js to rebuild...');
+      await new Promise(resolve => setTimeout(resolve, 15000));
 
       // Get the preview URL (should be the same)
       const previewLink = await sandbox.getPreviewLink(3000);

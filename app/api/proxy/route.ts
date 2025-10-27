@@ -27,18 +27,33 @@ export async function GET(req: Request) {
 
     console.log('Proxying:', fullUrl);
 
-    const response = await fetch(fullUrl, { 
-      headers,
-      redirect: 'follow'
-    });
+    let response;
+    try {
+      response = await fetch(fullUrl, { 
+        headers,
+        redirect: 'follow',
+        timeout: 10000 // 10 second timeout
+      });
+    } catch (fetchError) {
+      console.error('Fetch error:', fetchError);
+      return NextResponse.json(
+        { error: 'Failed to connect to sandbox. It may be restarting.' },
+        { status: 503 }
+      );
+    }
     
     if (!response.ok) {
       console.error('Failed to fetch:', fullUrl, 'Status:', response.status);
-      const errorText = await response.text();
-      console.error('Error response:', errorText.substring(0, 200));
+      let errorText = '';
+      try {
+        errorText = await response.text();
+        console.error('Error response:', errorText.substring(0, 200));
+      } catch (e) {
+        // Ignore text parsing errors
+      }
       return NextResponse.json(
-        { error: `Failed to fetch: ${response.status}` },
-        { status: response.status }
+        { error: `Sandbox returned error: ${response.status}. The sandbox may be restarting or unavailable.` },
+        { status: 503 } // Service Unavailable instead of 500
       );
     }
     

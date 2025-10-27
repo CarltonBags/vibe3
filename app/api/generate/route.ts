@@ -561,7 +561,7 @@ Remember: Return ONLY a JSON object with the files array. No explanations, no ma
       // Try to parse as JSON
       filesData = JSON.parse(cleanedResponse);
       
-      console.log('✅ Successfully parsed JSON, found files:', filesData.files?.length);
+      console.log('✅ Successfully parsed JSON, found files:', filesData?.files?.length);
       
       if (!filesData || !filesData.files || !Array.isArray(filesData.files)) {
         throw new Error('Invalid response format: missing or invalid files array');

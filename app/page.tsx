@@ -596,6 +596,10 @@ export default function Home() {
                   className="flex-1 w-full border-0"
                   title="Website Preview"
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+                  onError={(e) => {
+                    console.log('Iframe error, will retry automatically');
+                    // Don't show error to user
+                  }}
                 />
               )}
             </>

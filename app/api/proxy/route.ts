@@ -27,33 +27,65 @@ export async function GET(req: Request) {
 
     console.log('Proxying:', fullUrl);
 
+    // Retry logic for transient failures (especially after amendments)
     let response;
-    try {
-      response = await fetch(fullUrl, { 
-        headers,
-        redirect: 'follow',
-        timeout: 10000 // 10 second timeout
-      });
-    } catch (fetchError) {
-      console.error('Fetch error:', fetchError);
-      return NextResponse.json(
-        { error: 'Failed to connect to sandbox. It may be restarting.' },
-        { status: 503 }
-      );
+    let lastError;
+    const maxRetries = 3;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        response = await fetch(fullUrl, { 
+          headers,
+          redirect: 'follow',
+          cache: 'no-cache'
+        });
+        
+        // If we got a successful response, break
+        if (response.ok) {
+          break;
+        }
+        
+        // If it's a 500 and we have retries left, wait and retry
+        if (response.status === 500 && attempt < maxRetries) {
+          console.log(`Retry attempt ${attempt}/${maxRetries} for 500 error`);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          continue;
+        }
+        
+        // Break if we should not retry
+        break;
+      } catch (fetchError) {
+        lastError = fetchError;
+        console.error(`Fetch error (attempt ${attempt}/${maxRetries}):`, fetchError);
+        
+        // Retry on network errors
+        if (attempt < maxRetries) {
+          console.log(`Retrying in 3 seconds...`);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          continue;
+        } else {
+          return NextResponse.json(
+            { error: 'Failed to connect to sandbox after multiple attempts.' },
+            { status: 503 }
+          );
+        }
+      }
     }
     
-    if (!response.ok) {
-      console.error('Failed to fetch:', fullUrl, 'Status:', response.status);
+    if (!response || !response.ok) {
+      console.error('Failed to fetch after retries:', fullUrl, 'Status:', response?.status || 'no response');
       let errorText = '';
-      try {
-        errorText = await response.text();
-        console.error('Error response:', errorText.substring(0, 200));
-      } catch (e) {
-        // Ignore text parsing errors
+      if (response) {
+        try {
+          errorText = await response.text();
+          console.error('Error response:', errorText.substring(0, 200));
+        } catch (e) {
+          // Ignore text parsing errors
+        }
       }
       return NextResponse.json(
-        { error: `Sandbox returned error: ${response.status}. The sandbox may be restarting or unavailable.` },
-        { status: 503 } // Service Unavailable instead of 500
+        { error: `Sandbox unavailable after multiple attempts. Please wait a moment and refresh.` },
+        { status: 503 }
       );
     }
     

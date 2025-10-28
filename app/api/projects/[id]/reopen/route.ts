@@ -6,6 +6,80 @@ import { supabaseAdmin } from '@/lib/supabase';
 import fs from 'fs';
 import path from 'path';
 
+// GET endpoint for viewing project preview (no sandbox spawning)
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id: projectId } = await params;
+
+    // Get authenticated user
+    const cookieStore = await cookies();
+
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID
+        ? `https://${process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID}.supabase.co`
+        : 'https://placeholder.supabase.co',
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC || 'placeholder-key',
+      {
+        cookies: {
+          getAll() {
+            return cookieStore.getAll()
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            )
+          },
+        },
+      }
+    );
+
+    const { data: { session } } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
+    // Get project from database
+    const { data: project, error: projectError } = await supabaseAdmin
+      .from('projects')
+      .select('*')
+      .eq('id', projectId)
+      .eq('user_id', userId)
+      .single();
+
+    if (projectError || !project) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
+    // Return the preview URL directly
+    return NextResponse.json({
+      success: true,
+      url: project.preview_url,
+      projectId: project.id,
+      projectName: project.name
+    });
+
+  } catch (error) {
+    console.error('Error getting project preview:', error);
+    return NextResponse.json(
+      { error: 'Failed to get project preview' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST endpoint for reopening with sandbox (for amendments)
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }

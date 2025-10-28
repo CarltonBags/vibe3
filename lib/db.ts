@@ -14,11 +14,18 @@ export async function checkUserLimits(userId: string) {
     throw new Error('Failed to check user limits')
   }
 
+  const result = data as {
+    can_generate: boolean
+    reason: string | null
+    generations_remaining: number
+    projects_remaining: number
+  }
+
   return {
-    canGenerate: data.can_generate,
-    reason: data.reason,
-    generationsRemaining: data.generations_remaining,
-    projectsRemaining: data.projects_remaining
+    canGenerate: result.can_generate,
+    reason: result.reason,
+    generationsRemaining: result.generations_remaining,
+    projectsRemaining: result.projects_remaining
   }
 }
 
@@ -105,6 +112,9 @@ export async function updateProject(
     last_generated_at?: string
     generation_count?: number
     github_repo_url?: string
+    build_hash?: string
+    build_version?: number
+    storage_path?: string
   }
 ) {
   const { data, error } = await supabaseAdmin
@@ -129,27 +139,48 @@ export async function saveProjectFiles(
   projectId: string,
   files: Array<{ path: string; content: string }>
 ) {
-  // Delete existing files for this project
-  await supabaseAdmin
-    .from('project_files')
-    .delete()
-    .eq('project_id', projectId)
-
-  // Insert new files
-  const filesToInsert = files.map(file => ({
+  // Prepare files to insert and deduplicate by file_path
+  const fileMap = new Map<string, { path: string; content: string }>()
+  for (const file of files) {
+    fileMap.set(file.path, file) // Later files with same path will overwrite earlier ones
+  }
+  
+  const filesToInsert = Array.from(fileMap.values()).map(file => ({
     project_id: projectId,
     file_path: file.path,
     file_content: file.content,
     file_size: Buffer.from(file.content).length
   }))
 
+  // Use upsert with explicit conflict handling
   const { error } = await supabaseAdmin
     .from('project_files')
-    .insert(filesToInsert)
+    .upsert(filesToInsert, {
+      onConflict: 'project_id,file_path'
+    })
 
   if (error) {
     console.error('Error saving project files:', error)
-    throw new Error('Failed to save project files')
+    
+    // If upsert fails, try delete + insert as fallback
+    if (error.code === '23505') {
+      console.log('Retrying with delete + insert strategy...')
+      await supabaseAdmin
+        .from('project_files')
+        .delete()
+        .eq('project_id', projectId)
+      
+      const { error: insertError } = await supabaseAdmin
+        .from('project_files')
+        .insert(filesToInsert)
+      
+      if (insertError) {
+        console.error('Error on retry:', insertError)
+        throw new Error('Failed to save project files')
+      }
+    } else {
+      throw new Error('Failed to save project files')
+    }
   }
 }
 

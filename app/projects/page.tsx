@@ -48,31 +48,31 @@ export default function Projects() {
     }
   }
 
-  const handleReopenProject = async (projectId: string) => {
+  const handleViewProject = async (projectId: string) => {
     // Prevent double-clicking
     if (reopeningId) {
-      console.log('Already reopening a project, please wait...');
+      console.log('Already opening a project, please wait...');
       return;
     }
-    
+
     setReopeningId(projectId)
     try {
       const res = await fetch(`/api/projects/${projectId}/reopen`, {
-        method: 'POST',
+        method: 'GET',
       })
 
       if (res.ok) {
         const data = await res.json()
-        // Redirect to home page with project data
-        router.push(`/?projectId=${projectId}&sandboxId=${data.sandboxId}&sandboxUrl=${encodeURIComponent(data.url)}&projectName=${encodeURIComponent(data.projectName)}`)
+        // Redirect to home page with preview URL (no sandbox)
+        router.push(`/?projectId=${projectId}&previewUrl=${encodeURIComponent(data.url)}&projectName=${encodeURIComponent(data.projectName)}`)
       } else {
         const error = await res.json()
-        alert(`Failed to reopen project: ${error.error}`)
+        alert(`Failed to view project: ${error.error}`)
         setReopeningId(null)
       }
     } catch (error) {
-      console.error('Error reopening project:', error)
-      alert('Failed to reopen project')
+      console.error('Error viewing project:', error)
+      alert('Failed to view project')
       setReopeningId(null)
     }
   }
@@ -195,22 +195,22 @@ export default function Projects() {
                   {/* Actions */}
                   <div className="flex gap-2">
                     <button
-                      onClick={() => handleReopenProject(project.id)}
+                      onClick={() => handleViewProject(project.id)}
                       disabled={reopeningId === project.id}
                       className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
                     >
                       {reopeningId === project.id ? (
                         <>
                           <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                          <span>Opening...</span>
+                          <span>Loading...</span>
                         </>
                       ) : (
                         <>
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                           </svg>
-                          <span>Open Project</span>
+                          <span>View Project</span>
                         </>
                       )}
                     </button>

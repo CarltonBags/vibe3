@@ -111,11 +111,31 @@ export async function GET(req: Request) {
       const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=`;
       const tokenSuffix = token ? `&token=${encodeURIComponent(token)}` : '';
       
+      // Inject fetch proxy BEFORE any other scripts
+      const fetchProxy = `
+<script>
+(function(){
+  const _fetch=window.fetch;
+  const p='${proxyPrefix}';
+  const t='${tokenSuffix}';
+  window.fetch=function(...a){
+    if(typeof a[0]==='string'&&a[0].startsWith('/'))a[0]=p+a[0]+t;
+    return _fetch.apply(this,a);
+  };
+  console.log('[Proxy] Global fetch override installed');
+})();
+</script>`;
+      // Insert before <head> or at the start of <body>
+      html = html.replace(/<head>/, `<head>${fetchProxy}`).replace(/<body>/, `<body>${fetchProxy}`).replace(/<!DOCTYPE/, `<!DOCTYPE`);
+      
       // Rewrite ALL URLs to go through our proxy with the bypass header
+      // Note: The first two replacements already catch all absolute paths including /src/ and /@/
       html = html
-        // Script and link tags with absolute paths (/_next/..., /grid.svg, etc.)
+        // Script and link tags with absolute paths (including /src/, /@/, /_next/, etc.)
         .replace(/href="(\/[^"]+)"/g, `href="${proxyPrefix}$1${tokenSuffix}"`)
         .replace(/src="(\/[^"]+)"/g, `src="${proxyPrefix}$1${tokenSuffix}"`)
+        // Explicitly handle Vite special paths that might be in type="module" tags
+        .replace(/(<script[^>]*type=["']module["'][^>]*>[\s\S]*?(src|import)["']\/)([@src][^"']+)["']/g, `$1${proxyPrefix}$3${tokenSuffix}"`)
         // data-href for Next.js preloads
         .replace(/data-href="(\/[^"]+)"/g, `data-href="${proxyPrefix}$1${tokenSuffix}"`)
         // Handle srcSet
@@ -125,15 +145,26 @@ export async function GET(req: Request) {
           );
           return `srcSet="${rewritten}"`;
         })
-        // CRITICAL: Rewrite webpack's public path inside inline scripts
+        // CRITICAL: Rewrite webpack's and Vite's public path inside inline scripts
         .replace(/<script([^>]*)>([\s\S]*?)<\/script>/g, (match, attrs, content) => {
           // Rewrite __webpack_require__.p assignments
           const rewrittenContent = content
             .replace(/__webpack_require__\.p\s*=\s*"[^"]*"/g, `__webpack_require__.p="${proxyPrefix}"`)
             .replace(/"assetPrefix"\s*:\s*"[^"]*"/g, `"assetPrefix":"${proxyPrefix.slice(0, -6)}"`)
-            .replace(/"basePath"\s*:\s*"[^"]*"/g, `"basePath":""`);
+            .replace(/"basePath"\s*:\s*"[^"]*"/g, `"basePath":""`)
+            // Vite: rewrite import.meta.env.DEV and HMR URLs, disable HMR for iframe
+            .replace(/import\.meta\.env\.DEV/g, 'false')
+            .replace(/import\.meta\.env\.MODE/g, '"production"')
+            .replace(/import\.meta\.hot/g, 'null')
+            .replace(/import\.meta\.url/g, 'window.location.href')
+            .replace(/(new URL\()\s*["']([\/@]\/[^"']+)["']/g, (match: string, prefix: string, url: string) => 
+              `${prefix}"${proxyPrefix}${url}${tokenSuffix}"`
+            );
           return `<script${attrs}>${rewrittenContent}</script>`;
         });
+      
+      // Debug: log first 500 chars of rewritten HTML
+      console.log('Rewritten HTML (first 500 chars):', html.substring(0, 500));
       
       return new NextResponse(html, {
         status: 200,
@@ -148,16 +179,26 @@ export async function GET(req: Request) {
     if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
       let js = await response.text();
       const baseUrl = new URL(targetUrl);
-      const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=/`;
+      const proxyPrefix = `/api/proxy?url=${encodeURIComponent(baseUrl.origin)}&path=`;
       const tokenSuffix = token ? `&token=${encodeURIComponent(token)}` : '';
       
-      // Rewrite webpack chunk URLs - ensure paths start with /
+      // Inject global proxy wrapper for Vite client
+      if (path && (path.includes('@vite/client') || path.includes('client.mjs'))) {
+        const patchCode = `(function(){const f=window.fetch;const p='${proxyPrefix}';const t='${tokenSuffix}';window.fetch=function(...a){if(typeof a[0]==='string'&&a[0].startsWith('/'))a[0]=p+a[0]+t;return f.apply(this,a);};console.log('[Proxy] Fetch wrapper installed');})();`;
+        js = patchCode + '\n' + js;
+      }
+      
+      // Rewrite Vite-specific and webpack chunk URLs
       js = js
+        // Vite HMR connections - disable for iframe
+        .replace(/import\.meta\.env\.DEV/g, 'false')
+        .replace(/import\.meta\.env\.MODE/g, '"production"')
+        .replace(/import\.meta\.hot/g, 'null')
         .replace(/__webpack_require__\.p\s*=\s*"[^"]*"/g, `__webpack_require__.p="${proxyPrefix}"`)
         .replace(/"assetPrefix":"[^"]*"/g, `"assetPrefix":"${proxyPrefix.replace('&path=/', '')}"`)
-        // Rewrite any hardcoded /_next/ paths
-        .replace(/"\/_next\//g, `"${proxyPrefix}_next/`)
-        .replace(/(['"])_next\//g, `$1${proxyPrefix}_next/`);
+        // Rewrite module specifiers
+        .replace(/(from|import)\s+['"](\/node_modules\/[^'"]+)['"]/g, `$1 '${proxyPrefix}$2${tokenSuffix}'`)
+        .replace(/(from|import)\s+['"](@\/[^'"]+)['"]/g, `$1 '${proxyPrefix}$2${tokenSuffix}'`);
       
       return new NextResponse(js, {
         status: 200,

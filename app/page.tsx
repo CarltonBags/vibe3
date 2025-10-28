@@ -83,18 +83,44 @@ export default function Home() {
     };
   }, [sandboxData?.sandboxId]);
 
-    // Handle reopened projects from URL params
+    // Handle projects from URL params (both new generation and existing projects)
     useEffect(() => {
       const projectId = searchParams.get('projectId')
       const sandboxUrl = searchParams.get('sandboxUrl')
+      const previewUrl = searchParams.get('previewUrl')
       const sandboxId = searchParams.get('sandboxId')
       const projectName = searchParams.get('projectName')
 
-      if (projectId && sandboxUrl && sandboxId && !hasGenerated) {
+      // Handle existing project viewing (no sandbox, just preview)
+      if (projectId && previewUrl && !hasGenerated) {
+        setHasGenerated(true)
+        setProgress('🚀 Loading your project...')
+
+        // Fetch project files
+        fetch(`/api/projects/${projectId}/files`)
+          .then(res => res.json())
+          .then(data => {
+            setSandboxData({
+              success: true,
+              projectId: projectId, // Store project ID for amendments
+              url: previewUrl, // Use preview URL directly
+              files: data.files || []
+              // No sandboxId for preview-only mode
+            })
+            setProgress('')
+          })
+          .catch(err => {
+            console.error('Error loading project:', err)
+            setError('Failed to load project files')
+            setHasGenerated(false)
+          })
+      }
+      // Handle reopened projects with sandbox (legacy support)
+      else if (projectId && sandboxUrl && sandboxId && !hasGenerated) {
         setIsGenerating(true)
         setHasGenerated(true)
         setProgress('🚀 Loading your project...')
-        
+
         // Fetch project files
         fetch(`/api/projects/${projectId}/files`)
           .then(res => res.json())
@@ -217,7 +243,7 @@ export default function Home() {
 
   const handleAmendment = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     if (!amendmentPrompt.trim() || !sandboxData || isAmending) {
       return
     }
@@ -227,13 +253,34 @@ export default function Home() {
     setProgress('🔧 Processing your changes...')
 
     try {
+      let sandboxId = sandboxData.sandboxId
+      const projectId = sandboxData.projectId || searchParams.get('projectId')
+
+      // If no sandbox exists (preview-only mode), spawn one first
+      if (!sandboxId && projectId) {
+        setProgress('🏗️ Starting development environment...')
+        const reopenResponse = await fetch(`/api/projects/${projectId}/reopen`, {
+          method: 'POST',
+        })
+
+        if (!reopenResponse.ok) {
+          throw new Error('Failed to start development environment')
+        }
+
+        const reopenData = await reopenResponse.json()
+        sandboxId = reopenData.sandboxId
+
+        // Update sandbox data with the new sandbox ID
+        setSandboxData(prev => prev ? { ...prev, sandboxId } : null)
+      }
+
       const response = await fetch('/api/amend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           amendmentPrompt: amendmentPrompt.trim(),
-          sandboxId: sandboxData.sandboxId,
-          projectId: sandboxData.projectId || searchParams.get('projectId'),
+          sandboxId: sandboxId,
+          projectId: projectId,
           currentFiles: sandboxData.files
         }),
       })
@@ -590,9 +637,9 @@ export default function Home() {
                 </div>
               )}
               {sandboxData.url && (
-                <iframe 
+                <iframe
                   key={`${sandboxData.url}-${sandboxData.lastModified || 0}`}
-                  src={`/api/proxy?url=${encodeURIComponent(sandboxData.url)}${sandboxData.token ? `&token=${encodeURIComponent(sandboxData.token)}` : ''}`}
+                  src={sandboxData.url}
                   className="flex-1 w-full border-0"
                   title="Website Preview"
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
@@ -642,18 +689,18 @@ export default function Home() {
                   ))}
                 </div>
 
-                {/* app/ folder */}
+                {/* src/ folder */}
                 <div className="mb-3">
                   <div className="text-xs font-semibold text-gray-500 mb-1 px-2 flex items-center gap-1">
                     <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
                       <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
                     </svg>
-                    app/
+                    src/
                   </div>
                   <div className="space-y-0.5 pl-2">
-                    {sandboxData.files?.filter(f => f.path.startsWith('app/') && !f.path.includes('/', 4)).map((file) => (
+                    {sandboxData.files?.filter(f => f.path.startsWith('src/') && !f.path.includes('/', 5)).map((file, idx) => (
                       <button
-                        key={file.path}
+                        key={`${file.path}-${idx}`}
                         onClick={() => setSelectedFile(file.path)}
                         className={`w-full text-left px-3 py-1.5 rounded text-xs transition-colors ${
                           selectedFile === file.path
@@ -682,8 +729,8 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* app/components/ folder */}
-                {sandboxData.files?.some(f => f.path.startsWith('app/components/')) && (
+                {/* src/components/ folder */}
+                {sandboxData.files?.some(f => f.path.startsWith('src/components/')) && (
                   <div className="mb-3">
                     <div className="text-xs font-semibold text-gray-500 mb-1 px-2 flex items-center gap-1 pl-4">
                       <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
@@ -692,7 +739,7 @@ export default function Home() {
                       components/
                     </div>
                     <div className="space-y-0.5 pl-4">
-                      {sandboxData.files?.filter(f => f.path.startsWith('app/components/')).map((file) => (
+                      {sandboxData.files?.filter(f => f.path.startsWith('src/components/')).map((file) => (
                         <button
                           key={file.path}
                           onClick={() => setSelectedFile(file.path)}
@@ -706,7 +753,7 @@ export default function Home() {
                             <svg className="w-3.5 h-3.5 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
                               <path d="M3 3h18v18H3V3m4.73 15.04l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27H7.73m4.05 0l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27h-2.43Z"/>
                             </svg>
-                            <span className="truncate">{file.path.replace('app/components/', '')}</span>
+                            <span className="truncate">{file.path.replace('src/components/', '')}</span>
                           </div>
                         </button>
                       ))}

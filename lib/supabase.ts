@@ -128,6 +128,9 @@ export interface Project {
   is_public: boolean
   github_repo_url: string | null
   custom_domain: string | null
+  build_hash: string | null // SHA-256 hash of the current build
+  build_version: number // Current build version
+  storage_path: string | null // Path in Supabase storage
   created_at: string
   updated_at: string
 }
@@ -138,6 +141,7 @@ export interface ProjectFile {
   file_path: string // e.g., 'app/page.tsx'
   file_content: string // The actual code
   file_size: number // in bytes
+  version: number // Which build version this file belongs to (optional, default to latest)
   created_at: string
 }
 

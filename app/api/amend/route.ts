@@ -4,7 +4,7 @@ import { OpenAI } from 'openai';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { supabaseAdmin } from '@/lib/supabase';
-import instructions from './systemPrompt';
+import instructions from './systemPrompt-vite';
 import { GoogleGenAI } from "@google/genai";
 import { 
   incrementUsage, 
@@ -404,27 +404,43 @@ export default function ${componentName}({}: Props) {
         await sandbox.fs.uploadFile(Buffer.from(file.content), filePath);
       }
 
-      // Hard restart Next.js - rebuild and restart production server
-      console.log('Rebuilding Next.js for production...');
-      await sandbox.process.executeCommand('cd /workspace && pkill -9 node || true');
-      await sandbox.process.executeCommand('cd /workspace && rm -rf .next || true');
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Build Vite project for production (not Next.js anymore)
+      console.log('🔨 Building Vite project...');
+      await sandbox.process.executeCommand('cd /workspace && npm run build');
 
-      // Build for production
-      console.log('Running npm run build...');
-      const buildResult = await sandbox.process.executeCommand('cd /workspace && npm run build 2>&1 || true');
-      console.log('Build output:', buildResult.result?.substring(0, 500));
+      // Get all build files from dist
+      console.log('📦 Collecting build files...');
+      const listResult = await sandbox.process.executeCommand('cd /workspace && find dist -type f');
       
-      // Start production server
-      console.log('Starting production server...');
-      await sandbox.process.executeCommand('cd /workspace && nohup npm run start > /tmp/next.log 2>&1 &');
-      
-      // Wait for production server to be ready
-      console.log('Waiting for server to be ready...');
-      await new Promise(resolve => setTimeout(resolve, 15000));
+      if (!listResult.result) {
+        throw new Error('Build produced no files');
+      }
 
-      // Get the preview URL (should be the same)
-      const previewLink = await sandbox.getPreviewLink(3000);
+      const buildFiles = listResult.result
+        .trim()
+        .split('\n')
+        .filter(f => f && f.startsWith('dist/'));
+
+      console.log(`Found ${buildFiles.length} build files`);
+
+      // Download all build files
+      const filesToUpload: Array<{ path: string; content: Buffer }> = [];
+      for (const filePath of buildFiles) {
+        const content = await sandbox.fs.downloadFile(`/workspace/${filePath}`);
+        const relativePath = filePath.replace('dist/', '');
+        filesToUpload.push({
+          path: relativePath,
+          content: content
+        });
+      }
+
+      // Upload to Supabase storage
+      console.log('📤 Uploading to Supabase storage...');
+      const { uploadBuild } = await import('@/lib/storage');
+      
+      const buildResult = await uploadBuild(userId, projectId, filesToUpload);
+
+      console.log('✅ Build uploaded successfully');
 
       // Merge modified files with existing files for database storage
       const updatedFiles = [...currentFiles];
@@ -440,12 +456,20 @@ export default function ${componentName}({}: Props) {
       // Update project in database with new files
       await saveProjectFiles(projectId, updatedFiles);
 
+      // Update project with build information
+      await updateProject(projectId, {
+        build_hash: buildResult.buildHash,
+        storage_path: `${userId}/${projectId}`,
+        last_generated_at: new Date().toISOString(),
+        status: 'active'
+      });
+
       // Increment token usage (but not generation count)
       await incrementUsage(userId, tokensUsed, false);
 
       return NextResponse.json({
         success: true,
-        url: previewLink.url,
+        url: buildResult.url,
         files: updatedFiles,
         modifiedFiles: amendmentData.files,
         summary: amendmentData.summary || `Updated ${amendmentData.files.length} files`,

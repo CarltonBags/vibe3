@@ -23,7 +23,13 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_KEY,
 });
 
-const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_KEY });
+const gemini = new GoogleGenAI({ 
+  apiKey: process.env.GEMINI_KEY,
+  // Add timeout and retry configuration
+  fetchOptions: {
+    timeout: 120000 // 2 minute timeout
+  }
+});
 
 export async function POST(req: Request) {
   const startTime = Date.now();
@@ -141,15 +147,39 @@ export async function POST(req: Request) {
     })();
 
     console.log('🤖 Calling Gemini API...');
-    const completionPromise = gemini.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [{text: prompt}],
-      config: {
-        systemInstruction: instruction.toString(),
-        responseMimeType: "application/json",
-        temperature: 0.3
+    
+    // Try primary model first, fallback to other models
+    const tryGeneration = async (modelName: string, attempt: number) => {
+      console.log(`Attempting with ${modelName} (attempt ${attempt})...`);
+      try {
+        return await gemini.models.generateContent({
+          model: modelName,
+          contents: [{text: prompt}],
+          config: {
+            systemInstruction: instruction.toString(),
+            responseMimeType: "application/json",
+            temperature: 0.3
+          }
+        });
+      } catch (error) {
+        console.error(`${modelName} failed:`, error);
+        throw error;
       }
-    });
+    };
+
+    const completionPromise = tryGeneration("gemini-2.5-flash", 1)
+      .catch(async (error) => {
+        console.log('Primary model failed, trying fallback models...');
+        // Fallback 1: Try gemini-1.5-flash
+        return tryGeneration("gemini-1.5-flash", 2)
+          .catch(async () => {
+            // Fallback 2: Try gemini-1.5-pro
+            return tryGeneration("gemini-1.5-pro", 3)
+              .catch(() => {
+                throw new Error('All Gemini models failed. Please try again later.');
+              });
+          });
+      });
 
     // Wait for both AI generation and sandbox creation to complete
     const [completion, sandboxResult] = await Promise.all([completionPromise, sandboxPromise]);
@@ -393,14 +423,14 @@ export default function ${componentName}({}: Props) {
       // Get template-specific handler
       const { ViteHandler } = await import('./templates/vite-handler')
       const handler = new ViteHandler()
-
+      
       // Setup the project using the template handler
       await handler.setupProject(sandbox)
 
       // Start installing dependencies in parallel with file uploads
       console.log('📦 Installing dependencies...');
       const installPromise = sandbox.process.executeCommand('cd /workspace && npm install');
-
+      
       // Write app files
       await sandbox.fs.uploadFile(Buffer.from(mainTsx), '/workspace/src/main.tsx');
       await sandbox.fs.uploadFile(Buffer.from(appTsx), '/workspace/src/App.tsx');
@@ -452,7 +482,7 @@ export default function ${componentName}({}: Props) {
       console.log('⏳ Waiting for dependencies to install...');
       await installPromise;
       console.log('✅ Dependencies installed successfully');
-
+      
       // ============================================================
       // PREFLIGHT TEST & AUTO-DEBUGGING
       // ============================================================
@@ -483,7 +513,7 @@ export default function ${componentName}({}: Props) {
         const hasJsonError = tsErrors.includes('"files"') || tsErrors.includes('Expected');
         const hasJsxError = tsErrors.includes('closing tag') || tsErrors.includes('Expected corresponding JSX') || tsErrors.includes('jsx identifier');
         const hasStringLiteralError = tsErrors.includes('TS1002') || tsErrors.includes('Unterminated string literal');
-
+        
         if (!hasTsErrors && !hasSyntaxErrors && !hasMissingImports && !hasJsonError && !hasJsxError && !hasStringLiteralError) {
           console.log('✅ Preflight checks passed!');
           hasErrors = false;
@@ -578,7 +608,7 @@ export default function ${componentName}({}: Props) {
         }
         
         // Note: Vite doesn't need 'use client' directive
-
+        
         // Fix 3: If string literal errors detected, try to fix them
         if (hasStringLiteralError && !needsFix) {
           console.log('🔧 Unterminated string literal detected, attempting to fix...');
@@ -805,7 +835,7 @@ export default function ${componentName}({}: Props) {
           'AI generated website'
         );
         projectId = project.id;
-
+        
         await updateProject(projectId, {
           sandbox_id: sandboxId,
           status: 'generating', // Temporary status while building

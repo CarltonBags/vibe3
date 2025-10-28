@@ -8,7 +8,7 @@ interface AuthContextType {
   user: SupabaseUser | null
   loading: boolean
   signIn: (email: string, password: string) => Promise<void>
-  signUp: (email: string, password: string, fullName: string) => Promise<void>
+  signUp: (email: string, password: string, fullName: string) => Promise<any>
   signOut: () => Promise<void>
   signInWithGoogle: () => Promise<void>
 }
@@ -74,7 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error('Authentication is not configured. Please add Supabase credentials to .env.local')
     }
 
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
@@ -84,6 +84,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
     })
     if (error) throw error
+    return data
   }
 
   const signOut = async () => {

@@ -21,6 +21,8 @@ export default function Projects() {
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
   const [reopeningId, setReopeningId] = useState<string | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [newProjectName, setNewProjectName] = useState('')
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -74,6 +76,34 @@ export default function Projects() {
       console.error('Error viewing project:', error)
       alert('Failed to view project')
       setReopeningId(null)
+    }
+  }
+
+  const handleRenameProject = async (projectId: string, currentName: string) => {
+    const newName = prompt('Enter new project name:', currentName)
+    if (!newName || newName.trim() === '' || newName.trim() === currentName) {
+      return
+    }
+
+    try {
+      const res = await fetch(`/api/projects/${projectId}/update`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim() })
+      })
+
+      if (res.ok) {
+        // Update the project in the local state
+        setProjects(prev => prev.map(p =>
+          p.id === projectId ? { ...p, name: newName.trim() } : p
+        ))
+      } else {
+        const error = await res.json()
+        alert(`Failed to rename project: ${error.error}`)
+      }
+    } catch (error) {
+      console.error('Error renaming project:', error)
+      alert('Failed to rename project')
     }
   }
 
@@ -176,7 +206,18 @@ export default function Projects() {
 
                 {/* Project Info */}
                 <div className="p-6">
-                  <h3 className="text-lg font-bold mb-2 truncate">{project.name}</h3>
+                  <div className="flex items-center gap-2 mb-2">
+                    <h3 className="text-lg font-bold truncate flex-1">{project.name}</h3>
+                    <button
+                      onClick={() => handleRenameProject(project.id, project.name)}
+                      className="text-gray-400 hover:text-gray-300 p-1 rounded transition-colors opacity-0 group-hover:opacity-100"
+                      title="Rename project"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      </svg>
+                    </button>
+                  </div>
                   <p className="text-sm text-gray-400 mb-4 line-clamp-2">
                     {project.description || project.prompt}
                   </p>

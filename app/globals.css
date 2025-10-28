@@ -12,18 +12,46 @@
   .input-container {
     @apply relative bg-zinc-900/50 backdrop-blur-sm rounded-lg border border-zinc-700/50 overflow-hidden transition-all duration-300;
   }
-  
+
   .input-container:focus-within {
     @apply border-zinc-500/50 shadow-lg shadow-zinc-500/20;
   }
 
   .submit-arrow {
     @apply absolute bottom-3 right-3 p-2 rounded-full
-           transition-all duration-300 cursor-pointer transform hover:scale-110 
+           transition-all duration-300 cursor-pointer transform hover:scale-110
            hover:shadow-lg hover:shadow-purple-500/50;
   }
-  
+
   .submit-arrow svg {
     @apply text-white;
+  }
+}
+
+@layer utilities {
+  .animate-scroll-left {
+    animation: scroll-left 30s linear infinite;
+  }
+
+  .animate-scroll-right {
+    animation: scroll-right 25s linear infinite;
+  }
+}
+
+@keyframes scroll-left {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes scroll-right {
+  0% {
+    transform: translateX(-50%);
+  }
+  100% {
+    transform: translateX(0);
   }
 }

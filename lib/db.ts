@@ -139,48 +139,190 @@ export async function saveProjectFiles(
   projectId: string,
   files: Array<{ path: string; content: string }>
 ) {
-  // Prepare files to insert and deduplicate by file_path
-  const fileMap = new Map<string, { path: string; content: string }>()
-  for (const file of files) {
-    fileMap.set(file.path, file) // Later files with same path will overwrite earlier ones
-  }
-  
-  const filesToInsert = Array.from(fileMap.values()).map(file => ({
+  // Prepare files to insert (do NOT overwrite previous versions)
+  const filesToInsert = files.map(file => ({
     project_id: projectId,
     file_path: file.path,
     file_content: file.content,
     file_size: Buffer.from(file.content).length
   }))
-
-  // Use upsert with explicit conflict handling
   const { error } = await supabaseAdmin
     .from('project_files')
-    .upsert(filesToInsert, {
-      onConflict: 'project_id,file_path'
-    })
+    .insert(filesToInsert)
 
   if (error) {
     console.error('Error saving project files:', error)
-    
-    // If upsert fails, try delete + insert as fallback
-    if (error.code === '23505') {
-      console.log('Retrying with delete + insert strategy...')
-      await supabaseAdmin
-        .from('project_files')
-        .delete()
-        .eq('project_id', projectId)
-      
-      const { error: insertError } = await supabaseAdmin
-        .from('project_files')
-        .insert(filesToInsert)
-      
-      if (insertError) {
-        console.error('Error on retry:', insertError)
-        throw new Error('Failed to save project files')
-      }
-    } else {
-      throw new Error('Failed to save project files')
-    }
+    throw new Error('Failed to save project files')
+  }
+}
+
+/**
+ * Build-aware file saving and build bookkeeping
+ */
+export async function getLatestBuildVersion(projectId: string): Promise<number> {
+  // Attempts to read builds table; falls back to counting distinct file sets if missing
+  const { data, error } = await supabaseAdmin
+    .from('builds')
+    .select('version')
+    .eq('project_id', projectId)
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    // Table may not exist yet
+    return 0
+  }
+  return data?.version || 0
+}
+
+export async function createBuild(
+  projectId: string,
+  userId: string,
+  options?: { storage_path?: string; build_hash?: string }
+) {
+  try {
+    const current = await getLatestBuildVersion(projectId)
+    const nextVersion = current + 1
+    const { data, error } = await supabaseAdmin
+      .from('builds')
+      .insert({
+        project_id: projectId,
+        user_id: userId,
+        version: nextVersion,
+        storage_path: options?.storage_path || null,
+        build_hash: options?.build_hash || null,
+        status: 'pending'
+      })
+      .select()
+      .single()
+    if (error) throw error
+    return data
+  } catch (e) {
+    // If builds table missing, return a shim
+    return { id: null, version: null }
+  }
+}
+
+export async function finalizeBuild(
+  buildId: string | null,
+  status: 'success' | 'failed'
+) {
+  if (!buildId) return
+  await supabaseAdmin
+    .from('builds')
+    .update({ status })
+    .eq('id', buildId)
+}
+
+export async function updateBuild(
+  buildId: string,
+  updates: { git_repo_url?: string | null; git_commit_sha?: string | null; git_tag?: string | null }
+) {
+  const { error } = await supabaseAdmin
+    .from('builds')
+    .update(updates)
+    .eq('id', buildId)
+  if (error) {
+    console.error('Error updating build:', error)
+  }
+}
+
+export async function getProjectById(projectId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('projects')
+    .select('*')
+    .eq('id', projectId)
+    .single()
+  if (error) return null
+  return data
+}
+
+export async function saveAmendment(
+  projectId: string,
+  buildId: string | null,
+  prompt: string,
+  summary: string | null,
+  filePaths: string[]
+) {
+  const { error } = await supabaseAdmin
+    .from('amendments')
+    .insert({
+      project_id: projectId,
+      build_id: buildId,
+      prompt,
+      summary,
+      file_paths: filePaths
+    })
+  if (error) {
+    console.error('Error saving amendment:', error)
+  }
+}
+
+export async function getRecentAmendments(
+  projectId: string,
+  limit = 5
+) {
+  const { data, error } = await supabaseAdmin
+    .from('amendments')
+    .select('prompt, summary, file_paths, created_at')
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) {
+    console.error('Error fetching amendments:', error)
+    return []
+  }
+  return data as Array<{ prompt: string; summary: string | null; file_paths: string[]; created_at: string }>
+}
+
+export async function saveProjectFilesToBuild(
+  projectId: string,
+  buildId: string | null,
+  files: Array<{ path: string; content: string }>
+) {
+  if (!buildId) {
+    // Fallback to legacy saving
+    return saveProjectFiles(projectId, files)
+  }
+  const filesToInsert = files.map(file => ({
+    project_id: projectId,
+    build_id: buildId,
+    file_path: file.path,
+    file_content: file.content,
+    file_size: Buffer.from(file.content).length
+  }))
+
+  const { error } = await supabaseAdmin
+    .from('project_files')
+    .insert(filesToInsert)
+
+  if (error) {
+    console.error('Error saving project files (build-scoped):', error)
+    throw new Error('Failed to save project files for build')
+  }
+}
+
+export async function saveFileChunks(
+  projectId: string,
+  buildId: string | null,
+  chunks: Array<{ file_path: string; chunk_index: number; content: string; embedding: number[] }>
+) {
+  if (chunks.length === 0) return
+  const payload = chunks.map(c => ({
+    project_id: projectId,
+    build_id: buildId,
+    file_path: c.file_path,
+    chunk_index: c.chunk_index,
+    content: c.content,
+    embedding: c.embedding as unknown as any
+  }))
+  const { error } = await supabaseAdmin
+    .from('file_chunks')
+    .insert(payload)
+  if (error) {
+    console.error('Error saving file chunks:', error)
+    // don't throw; embeddings are auxiliary
   }
 }
 
@@ -200,6 +342,24 @@ export async function getProjectFiles(projectId: string) {
   }
 
   return data as ProjectFile[]
+}
+
+export async function matchFileChunks(
+  projectId: string,
+  embedding: number[],
+  matchCount = 20
+) {
+  const { data, error } = await supabaseAdmin
+    .rpc('match_file_chunks', {
+      p_project_id: projectId,
+      p_query: embedding as unknown as any,
+      p_match_count: matchCount
+    })
+  if (error) {
+    console.error('Error matching file chunks:', error)
+    return []
+  }
+  return data as Array<{ id: string; project_id: string; build_id: string | null; file_path: string; chunk_index: number; content: string; similarity: number }>
 }
 
 /**

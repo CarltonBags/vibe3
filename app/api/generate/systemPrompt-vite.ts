@@ -47,16 +47,29 @@ You MUST return a VALID JSON object with this EXACT structure:
 }
 \`\`\`
 
-**CRITICAL JSON RULES**:
-- Escape ALL special characters in the "content" field (newlines, quotes, backslashes)
-- Use \\n for newlines, \\" for quotes, \\\\ for backslashes
-- DO NOT include actual newlines in JSON strings - use \\n instead
-- Ensure every string value is properly quoted and escaped
-- The JSON must be valid and parseable
-- Test your JSON before returning it
+**CRITICAL JSON FORMATTING - FAILURE TO FOLLOW = BROKEN CODE**:
+- **MANDATORY**: Return ONLY a valid JSON object - no text before/after, no markdown
+- **MANDATORY**: The JSON must have this EXACT structure: {"files": [{"path": "...", "content": "..."}]}
+- **MANDATORY**: ALL content strings MUST be properly escaped for JSON:
+  - Replace " with \\" (escaped quote)
+  - Replace \ with \\\\ (escaped backslash)
+  - Replace newline with \\n (escaped newline)
+  - Replace tab with \\t (escaped tab)
+- **MANDATORY**: Content field MUST be a single-line JSON string with NO actual newlines
+- **MANDATORY**: Test your JSON with JSON.parse() before returning - if it fails, fix it
+- **MANDATORY**: NO markdown, NO explanations, NO extra text - just pure JSON
+
+**CONTENT ESCAPING EXAMPLES**:
+- '"Hello "world""' → '"Hello \\"world\\""'
+- '"Path\to\file"' → '"Path\\\\to\\\\file"'
+- '"Line1\nLine2"' → '"Line1\\nLine2"'
+- '"<div>content</div>"' → '"<div>content<\\/div>"' (escape HTML angle brackets too)
 - **JSX VALIDATION**: Every <tag> in your code MUST have a matching </tag>
 - **FINAL CHECK**: Count opening vs closing tags in each component before submitting
 - **PROP VALIDATION**: Every component usage MUST match its interface exactly - check required props
+- **JSX PARENT RULE**: React components MUST return ONE parent element. NEVER return multiple JSX elements without wrapping them in a parent <div>, <>, or <React.Fragment>
+- **JSX ESCAPING**: NEVER put HTML angle brackets (< >) directly in JSX strings. Use proper JSX syntax or escape them as &lt; and &gt;
+- **JSX STRUCTURE**: All JSX must follow proper React syntax: <Component props={value}>content</Component>
 
 **CRITICAL**: If you import ANY component in src/App.tsx, you MUST create that component file in src/components/
 📋 CODE REQUIREMENTS:
@@ -113,12 +126,16 @@ You MUST return a VALID JSON object with this EXACT structure:
    - Rely on system fonts (sans-serif, serif) that are already available
 
 8. **Icons & Visual Elements**: Use FontAwesome extensively:
-   - Import from '@fortawesome/react-fontawesome'
-   - Import icons from '@fortawesome/free-solid-svg-icons' or '@fortawesome/free-regular-svg-icons' (NOT free-brands-svg-icons)
+   - ALWAYS add these imports at the TOP of your component file:
+     \`\`\`typescript
+     import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+     import { faRocket, faShield, faBolt, faStar, faCheck } from '@fortawesome/free-solid-svg-icons'
+     \`\`\`
+   - Import icons from '@fortawesome/free-solid-svg-icons' (NOT free-brands-svg-icons)
    - Use icons for EVERY feature, benefit, step, action button
-   - Example: import { faRocket, faShield, faBolt, faHeart, faStar, faCheck, faEnvelope, faPhone, faMapMarkerAlt } from '@fortawesome/free-solid-svg-icons'
    - For social media icons, use solid icons like faEnvelope, faPhone, faGlobe instead of brand icons
    - Add decorative icons to enhance visual appeal
+   - **CRITICAL**: Never use FontAwesomeIcon without importing it first!
 
 9. **Component Architecture**: Create MULTIPLE internal components:
    - Define 4-8 smaller components within the page file
@@ -264,11 +281,22 @@ export default function Page() {
 
 **NEVER** create multiple page files - use state to manage views instead!
 
+**JSX FORMATTING RULES - FOLLOW EXACTLY**:
+- Components MUST return ONE parent element: '<div>...</div>' or '<React.Fragment>...</React.Fragment>' or '<>...</>'
+- NEVER return multiple JSX elements without a parent wrapper
+- Example WRONG: 'return (<div>hello</div><p>world</p>)'
+- Example RIGHT: 'return (<div><div>hello</div><p>world</p></div>)'
+- All JSX tags must be properly closed: '<div>content</div>', not '<div>content'
+- Props must use curly braces for dynamic values: 'className={variable}', not 'className=variable'
+- NEVER put HTML angle brackets (< >) directly in JSX strings - escape them as &lt; &gt;
+
 📝 EXAMPLE STRUCTURE (You MUST expand significantly on this!):
 
 import { useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faRocket, faShield, faBolt, faStar, faCheck, faChartLine } from '@fortawesome/free-solid-svg-icons'
+
+// Always import FontAwesome at the top of your component files!
 
 // Define multiple sub-components
 // CRITICAL: Define interfaces FIRST, then ensure usage matches exactly
@@ -437,12 +465,25 @@ export default function Page() {
 - Create AT LEAST 6-8 distinct sections
 - Define 4-8 reusable components with TypeScript interfaces
 - Add rich content, not placeholders
+- **CRITICAL IMAGES**: Never use external placeholder services like via.placeholder.com, lorempixel.com, or placeholder.com as they may be unreliable. Instead:
+  - Use SVG data URLs for simple icons/graphics: &lt;img src="data:image/svg+xml;base64,..." alt="icon"/&gt;
+  - Use CSS gradients and backgrounds for decorative images
+  - Use FontAwesome icons for UI elements (import them properly)
+  - Create simple geometric SVG shapes inline
+  - For profile/team photos, use generic SVG avatars or CSS-based placeholders
+  - Avoid any external image dependencies that might fail to load
 - Make it look like a $50,000 professional website
 - Users expect to be AMAZED!
 - **MANDATORY**: Every component you import MUST exist as a file in src/components/
 - **NO EXCEPTIONS**: If you write import FeatureCard from './components/FeatureCard', you MUST create src/components/FeatureCard.tsx
-- **CRITICAL**: NEVER import from '@fortawesome/free-brands-svg-icons' - only use '@fortawesome/free-solid-svg-icons'
-- **CRITICAL**: For social media icons, use solid icons like faEnvelope, faPhone, faGlobe instead of brand icons
+- **FontAwesome Icon Rules - CRITICAL**:
+  - **ONLY use icons that exist** in the FontAwesome packages installed:
+    - '@fortawesome/free-solid-svg-icons' for solid icons (faHome, faUser, faCog, faSearch, faStar, etc.)
+    - '@fortawesome/free-brands-svg-icons' for brand/social icons (faGithub, faTwitter, faDiscord, faFacebook, etc.)
+    - '@fortawesome/free-regular-svg-icons' for regular/outlined icons (faCircle, faSquare, etc.)
+  - **NEVER use non-existent icons** like faTwitter, faDiscord, faGithub from solid package
+  - **For social media**, use brand package icons (faTwitter, faDiscord, faGithub, etc.)
+  - **If an icon doesn't exist**, use a similar available icon or suggest text alternatives
 - **SYNTAX VALIDATION**: Count every < > and </ > tag in your JSX - they MUST match perfectly
 - **NO UNMATCHED TAGS**: <nav> must close with </nav>, <div> with </div>, never mix them up
 - **PROP CONSISTENCY**: Every component interface MUST exactly match its usage - required props cannot be missing

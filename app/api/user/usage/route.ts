@@ -11,9 +11,7 @@ export async function GET(request: Request) {
     
     // Debug: Check what cookies we have
     const allCookies = cookieStore.getAll()
-    console.log('Usage API: Available cookies:', allCookies.map(c => c.name).join(', '))
     const authCookies = allCookies.filter(c => c.name.startsWith('sb-'))
-    console.log('Usage API: Auth cookies found:', authCookies.length)
     
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID 
@@ -36,8 +34,7 @@ export async function GET(request: Request) {
 
     // Get authenticated user from cookies
     const { data: { session }, error: sessionError } = await supabase.auth.getSession()
-    
-    console.log('Usage API: Session check:', session ? 'Authenticated' : 'Not authenticated')
+
     if (sessionError) {
       console.error('Usage API: Session error:', sessionError)
     }
@@ -50,7 +47,6 @@ export async function GET(request: Request) {
     }
 
     const userId = session.user.id
-    console.log('Usage API: Fetching for user:', userId)
 
     // Get user with tier info (uses supabaseAdmin internally)
     const userWithTier = await getUserWithTier(userId)
@@ -62,8 +58,6 @@ export async function GET(request: Request) {
         { status: 404 }
       )
     }
-
-    console.log('Usage API: User tier:', userWithTier.tier.name)
 
     // Get current period usage
     const currentPeriodStart = new Date()

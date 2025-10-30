@@ -207,9 +207,10 @@ export async function POST(
     await sandbox.fs.uploadFile(Buffer.from(globalsCss), '/workspace/app/globals.css');
     await sandbox.fs.uploadFile(Buffer.from(layoutTsx), '/workspace/app/layout.tsx');
 
-    // Upload saved project files
-    console.log(`Uploading ${files.length} saved files...`);
-    for (const file of files) {
+    // Upload saved project files (dedup by path)
+    const uniqueFiles = Array.from(new Map(files.map(f => [f.file_path, f])).values());
+    console.log(`Uploading ${uniqueFiles.length} saved files...`);
+    for (const file of uniqueFiles) {
       if (!file.file_content) {
         console.warn(`Skipping file with no content: ${file.file_path}`);
         continue;

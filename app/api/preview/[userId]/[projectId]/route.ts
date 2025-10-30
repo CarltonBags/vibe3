@@ -11,6 +11,8 @@ export async function GET(
     const { userId, projectId } = await params;
     const { searchParams } = new URL(req.url);
     const path = searchParams.get('path') || 'index.html';
+    // Ignore cache-busting parameters like 't'
+    // We'll handle this inline in the URL rewriting
 
     // Construct the storage path
     const storagePath = `${userId}/${projectId}/${path}`;
@@ -37,12 +39,15 @@ export async function GET(
     if (contentType === 'text/html') {
       let html = buffer.toString('utf-8');
 
+      // Get cache-busting parameter from original request
+      const cacheBustParam = searchParams.get('t') ? `&t=${searchParams.get('t')}` : '';
+
       // Rewrite asset URLs to use our preview endpoint with path parameter
       const previewBase = `/api/preview/${userId}/${projectId}?path=`;
       html = html.replace(/(href|src)="([^"]+)"/g, (match, attr, url) => {
         if (url.startsWith('./') || url.startsWith('/')) {
           const assetPath = url.startsWith('./') ? url.substring(2) : url.substring(1);
-          return `${attr}="${previewBase}${encodeURIComponent(assetPath)}"`;
+          return `${attr}="${previewBase}${encodeURIComponent(assetPath)}${cacheBustParam}"`;
         }
         return match;
       });
@@ -51,7 +56,7 @@ export async function GET(
         status: 200,
         headers: {
           'Content-Type': 'text/html',
-          'Cache-Control': 'public, max-age=300',
+          'Cache-Control': 'public, max-age=60', // Reduced to 1 minute for amendments
         },
       });
     }

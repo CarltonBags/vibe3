@@ -23,12 +23,8 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_KEY,
 });
 
-const gemini = new GoogleGenAI({ 
-  apiKey: process.env.GEMINI_KEY,
-  // Add timeout and retry configuration
-  fetchOptions: {
-    timeout: 120000 // 2 minute timeout
-  }
+const gemini = new GoogleGenAI({
+  apiKey: process.env.GEMINI_KEY
 });
 
 export async function POST(req: Request) {
@@ -37,12 +33,9 @@ export async function POST(req: Request) {
   let tokensUsed = 0;
 
   try {
-    console.log('🚀 POST /api/generate - Starting generation request');
-    
     let requestBody;
     try {
       requestBody = await req.json();
-      console.log('✅ Request body parsed successfully');
     } catch (e) {
       console.error('❌ Failed to parse request body:', e);
       return NextResponse.json(
@@ -52,8 +45,6 @@ export async function POST(req: Request) {
     }
     
     const { prompt, projectId: existingProjectId, template = 'vite-react' } = requestBody;
-    console.log('📝 Prompt received:', prompt?.substring(0, 100));
-    console.log('🎨 Template:', template);
 
     if (!prompt) {
       return NextResponse.json(
@@ -63,7 +54,6 @@ export async function POST(req: Request) {
     }
 
     // Get authenticated user from cookies
-    console.log('🔐 Getting user from cookies...');
     const cookieStore = await cookies();
     
     const supabase = createServerClient(
@@ -85,23 +75,20 @@ export async function POST(req: Request) {
       }
     )
 
-    const { data: { session } } = await supabase.auth.getSession();
-    console.log('🔐 Session check:', session ? 'Authenticated' : 'Not authenticated');
-    
-    if (!session) {
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData?.user) {
       return NextResponse.json(
         { error: 'Unauthorized - Please sign in' },
         { status: 401 }
       );
     }
 
-    const userId = session.user.id;
-    console.log('✅ User authenticated:', userId);
+    const userId = userData.user.id;
+    const requestId = Math.random().toString(36).slice(2, 8)
+    console.log(`[generate:${requestId}] start user=${userId} template=${template} promptLen=${(prompt||'').length}`)
 
     // Check user limits
-    console.log('🔍 Checking user limits...');
     const limits = await checkUserLimits(userId);
-    console.log('✅ Limits checked:', limits.canGenerate);
     if (!limits.canGenerate) {
       return NextResponse.json(
         { 
@@ -125,279 +112,322 @@ export async function POST(req: Request) {
     // Cap at model's maximum (gpt-4o-mini supports max 16384 completion tokens)
     const maxTokens = Math.min(userWithTier.tier.max_tokens_per_generation, 100000);
 
-    // Start sandbox creation in parallel with AI generation
-    console.log('🏗️ Starting Daytona sandbox creation...');
-    const sandboxPromise = (async () => {
-      const daytona = new Daytona({
-        apiKey: process.env.DAYTONA_KEY || '',
-        apiUrl: process.env.DAYTONA_URL || 'https://api.daytona.io'
-      });
+    // Preflight: Daytona env check for clearer errors
+    if (!process.env.DAYTONA_KEY) {
+      console.error('[generate] Missing DAYTONA_KEY env');
+      return NextResponse.json({ error: 'Server not configured: DAYTONA_KEY is missing' }, { status: 500 });
+    }
 
-      // Create sandbox with Node.js environment (auto-provisions from Docker Hub)
-      // Setting public: true makes the sandbox accessible without authentication
-      console.log('📦 Provisioning sandbox with image: node:20-alpine');
-      const sandbox = await daytona.create({
-        image: 'node:20-alpine',
-        public: true,
-        ephemeral: true,
-      });
-      const sandboxId = sandbox.id;
-      console.log('✅ Sandbox created:', sandboxId);
-      return { sandbox, sandboxId };
+    // Prepare template context for planning (default to Vite; modular later via template param)
+    const { getTemplateFiles } = await import('@/lib/templates');
+    const planningTemplate = {
+      id: 'vite-react',
+      name: 'Vite + React + TypeScript',
+      description: 'Fast React development with Vite, TypeScript, and Tailwind CSS',
+      templatePath: 'templates/vite',
+      systemPromptPath: 'app/api/generate/systemPrompt-vite.ts',
+      buildCommand: 'npm run build',
+      devCommand: 'npm run dev',
+      buildDir: 'dist'
+    };
+    const planningTemplateFiles = getTemplateFiles(planningTemplate);
+    const planningPackageJson = planningTemplateFiles['package.json'] || '{}';
+
+    // Phase 1: Create a plan with gpt-4o-mini
+    const planSystem = 'You are a project planner for a web app generator. Return ONLY valid JSON with keys app_summary, tech_stack, folders, files (path+purpose), components (name+props+description), build_plan (ordered).';
+    const planUserPayload = {
+      prompt: prompt,
+      template: planningTemplate.id,
+      template_package_json: JSON.parse(planningPackageJson)
+    };
+    const planCompletion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: planSystem },
+        { role: 'user', content: JSON.stringify(planUserPayload) }
+      ],
+      response_format: { type: 'json_object' }
+    });
+    const planRaw = planCompletion.choices[0]?.message?.content || '{}';
+    tokensUsed += planCompletion.usage?.total_tokens || 0;
+    console.log(`[generate:${requestId}] plan tokens=${planCompletion.usage?.total_tokens||0} snippet=${(planRaw||'').slice(0,300)}`)
+
+    // Normalize plan.files to array
+    let planJson: any = {};
+    try { planJson = JSON.parse(planRaw) } catch {}
+    let planFiles: Array<{ path: string; purpose?: string }> = []
+    if (Array.isArray(planJson?.files)) {
+      planFiles = planJson.files
+    } else if (planJson?.files && typeof planJson.files === 'object') {
+      planFiles = Object.keys(planJson.files).map(k => ({ path: k, purpose: planJson.files[k] }))
+    }
+    console.log(`[generate:${requestId}] plan files count=${planFiles.length}`)
+
+    // Start sandbox creation in parallel with AI generation
+    const sandboxPromise = (async () => {
+      try {
+        const daytona = new Daytona({
+          apiKey: process.env.DAYTONA_KEY || '',
+          apiUrl: process.env.DAYTONA_URL || 'https://api.daytona.io'
+        });
+
+        console.log('[generate] Creating Daytona sandbox...');
+        const sandbox = await daytona.create({
+          image: 'node:20-alpine',
+          public: true,
+          ephemeral: true,
+        });
+        const sandboxId = sandbox.id;
+        console.log('[generate] Sandbox created:', sandboxId);
+        return { sandbox, sandboxId };
+      } catch (e) {
+        console.error('[generate] Daytona sandbox creation failed:', e);
+        throw new Error('Sandbox creation failed');
+      }
     })();
 
-    console.log('🤖 Calling Gemini API...');
-    
-    // Try primary model first, fallback to other models
-    const tryGeneration = async (modelName: string, attempt: number) => {
-      console.log(`Attempting with ${modelName} (attempt ${attempt})...`);
+    // Helper: robust JSON parse for files payload
+    const parseFilesJson = (raw: string) => {
+      let filesPayload: { files: Array<{ path: string; content: string }>, summary?: string } | null = null;
       try {
-        return await gemini.models.generateContent({
-          model: modelName,
-          contents: [{text: prompt}],
-          config: {
-            systemInstruction: instruction.toString(),
-            responseMimeType: "application/json",
-            temperature: 0.3
-          }
-        });
-      } catch (error) {
-        console.error(`${modelName} failed:`, error);
-        throw error;
+        let cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        const match = cleaned.match(/\{[\s\S]*"files"[\s\S]*\}/);
+        if (match) cleaned = match[0];
+        cleaned = cleaned.replace(/,(\s*[}\]])/g, '$1');
+        filesPayload = JSON.parse(cleaned);
+      } catch (e) {
+        filesPayload = null;
       }
+      return filesPayload;
     };
 
-    const completionPromise = tryGeneration("gemini-2.5-flash", 1)
-      .catch(async (error) => {
-        console.log('Primary model failed, trying fallback models...');
-        // Fallback 1: Try gemini-1.5-flash
-        return tryGeneration("gemini-1.5-flash", 2)
-          .catch(async () => {
-            // Fallback 2: Try gemini-1.5-pro
-            return tryGeneration("gemini-1.5-pro", 3)
-              .catch(() => {
-                throw new Error('All Gemini models failed. Please try again later.');
-              });
-          });
-      });
-
-    // Wait for both AI generation and sandbox creation to complete
-    const [completion, sandboxResult] = await Promise.all([completionPromise, sandboxPromise]);
-    const { sandbox, sandboxId } = sandboxResult;
-    console.log('✅ Gemini API call completed');
-
-    // Access response text correctly for Gemini SDK
-    let responseText = completion.text || '';
-    console.log('📝 Response text length:', responseText.length);
-    
-    // Log the raw response for debugging
-    console.log('📝 Raw Gemini response (first 500 chars):', responseText.substring(0, 500));
-    
-    // Try to get token usage from Gemini response
-    // Gemini doesn't expose usage like OpenAI, so we estimate
-    tokensUsed = Math.ceil(responseText.length / 4); // Rough estimate: 1 token ≈ 4 characters
-    
-    // Log for debugging
-    console.log(`Estimated tokens used: ${tokensUsed}, response length: ${responseText.length}`);
-    
-    // Parse JSON response
-    let filesData: { files: Array<{ path: string; content: string }> } | null = null;
-    try {
-      // Clean markdown formatting if present
-      let cleanedResponse = responseText
-        .replace(/```json\n?/g, '')
-        .replace(/```\n?/g, '')
-        .trim();
-      
-      // Try to extract JSON if it's embedded in text
-      const jsonMatch = cleanedResponse.match(/\{[\s\S]*"files"[\s\S]*\}/);
-      if (jsonMatch) {
-        cleanedResponse = jsonMatch[0];
+    // Helper: quick file validity checks (cheap heuristics)
+    const isLikelyValidFile = (path: string, content: string) => {
+      if (!content || content.length < 10) return false;
+      if (/```/.test(content)) return false; // markdown fences leaked
+      if (content.trim().startsWith('{') && content.includes('"files"')) return false; // nested JSON instead of code
+      if (path.endsWith('.tsx')) {
+        // cheap JSX sanity: has a return ( ... ) and matching parentheses count
+        const hasReturn = /return\s*\(/.test(content);
+        const parenBalance = (content.match(/\(/g)?.length || 0) - (content.match(/\)/g)?.length || 0);
+        if (!hasReturn || Math.abs(parenBalance) > 2) return false;
       }
-      
-      console.log('🧹 Cleaned response (first 200 chars):', cleanedResponse.substring(0, 200));
-      
-      // Fix escaped characters that can break JSON parsing
-      // Remove any trailing commas before closing braces/brackets
-      cleanedResponse = cleanedResponse.replace(/,(\s*[}\]])/g, '$1');
-      
-      // Try to parse as JSON
-      filesData = JSON.parse(cleanedResponse);
-      
-      console.log('✅ Successfully parsed JSON, found files:', filesData?.files?.length);
-      
-      if (!filesData || !filesData.files || !Array.isArray(filesData.files)) {
-        throw new Error('Invalid response format: missing or invalid files array');
-      }
+      return true;
+    };
 
-      if (filesData.files.length === 0) {
-        throw new Error('Invalid response format: files array is empty');
-      }
-
-      // CRITICAL: Unescape the content field if it contains escaped newlines
-      // The AI sometimes returns content as escaped strings like "...\n\n..."
-      filesData.files = filesData.files.map(file => {
-        let content = file.content;
-        
-        // Check if content itself is JSON-wrapped (nested JSON error)
-        if (typeof content === 'string' && content.trim().startsWith('{') && content.includes('"files"')) {
-          console.warn(`⚠️ File ${file.path} has nested JSON, attempting to extract...`);
-          try {
-            const nested = JSON.parse(content);
-            if (nested.files && nested.files[0]) {
-              content = nested.files[0].content;
-              console.log(`✅ Extracted nested content for ${file.path}`);
-            }
-          } catch (e) {
-            console.warn(`⚠️ Could not extract nested JSON for ${file.path}`);
-          }
-        }
-        
-        return {
-          ...file,
-          content: content
-            .replace(/\\n/g, '\n')  // Unescape newlines
-            .replace(/\\t/g, '\t')  // Unescape tabs
-            .replace(/\\"/g, '"')   // Unescape quotes
-            .replace(/\\\\/g, '\\') // Unescape backslashes (do this last!)
-        };
-      });
-
-      console.log(`✅ Successfully parsed ${filesData.files.length} files from AI response`);
-      
-      // Validate that all imports have corresponding files BEFORE uploading
-      const pageFile = filesData.files.find(f => f.path === 'src/App.tsx');
-      if (pageFile) {
-        console.log('🔍 Checking for component imports in App.tsx...');
-        
-        // More comprehensive regex to catch all import patterns
-        const importMatches = pageFile.content.match(/import\s+[\w\s,{}]+\s+from\s+['"]\.\/components\/(\w+)['"]/g);
-        console.log('Found import matches:', importMatches);
-        
-        if (importMatches && importMatches.length > 0) {
-          const importedComponents = importMatches.map(match => {
-            const componentMatch = match.match(/import\s+[\w\s,{}]+\s+from\s+['"]\.\/components\/(\w+)['"]/);
-            return componentMatch ? componentMatch[1] : null;
-          }).filter((comp): comp is string => comp !== null);
-          
-          console.log('Imported components:', importedComponents);
-          
-          const existingComponents = filesData.files
-            .filter(f => f.path.startsWith('src/components/') || f.path.startsWith('app/components/'))
-            .map(f => f.path.replace('src/components/', '').replace('app/components/', '').replace('.tsx', ''));
-          
-          console.log('Existing components:', existingComponents);
-          
-          const missingComponents = importedComponents.filter(comp => !existingComponents.includes(comp));
-          
-          console.log('Missing components:', missingComponents);
-          
-          if (missingComponents.length > 0) {
-            console.warn(`⚠️ Missing components detected: ${missingComponents.join(', ')}`);
-            console.log('🔧 Creating missing components...');
-            
-            // Create missing components
-            for (const componentName of missingComponents) {
-              const componentContent = `
-
-interface Props {
-  // Add props as needed
-}
-
-export default function ${componentName}({}: Props) {
-  return (
-    <div className="p-4 bg-white rounded-lg shadow-md">
-      <h3 className="text-lg font-semibold mb-2">${componentName}</h3>
-      <p className="text-gray-600">Component placeholder</p>
-    </div>
-  );
-}`;
-              
-              filesData.files.push({
-                path: `src/components/${componentName}.tsx`,
-                content: componentContent
-              });
-            }
-            
-            console.log(`✅ Created ${missingComponents.length} missing components`);
-          } else {
-            console.log('✅ All imported components exist');
-          }
-        } else {
-          console.log('No component imports found in page.tsx');
-        }
-      } else {
-        console.log('No page.tsx file found');
-      }
-      
-    } catch (parseError) {
-      console.error('❌ Failed to parse AI response as JSON:', parseError);
-      console.log('⚠️ CRITICAL: Parse error detected. Response text:', responseText.substring(0, 500));
-      
-      // Try multiple extraction strategies
-      console.log('🔧 Attempting emergency JSON extraction...');
-      
-      // Strategy 1: Try to manually parse by handling escaped characters properly
+    // Helper: regenerate a single file with focused prompt
+    const regenerateSingleFile = async (targetPath: string, reason: string, already: Array<{ path: string; size: number }>) => {
+      const singlePrompt = `Regenerate ONE file for this project. Output ONLY JSON {"files":[{"path":"${targetPath}","content":"..."}]}. Ensure TS/JSX correctness, no markdown fences, and no nested JSON. Reason: ${reason}.\n\nPROJECT PLAN:\n${planRaw}\n\nALREADY GENERATED (paths and sizes):\n${JSON.stringify(already)}`;
+      const tryModel = async (model: string) =>
+        gemini.models.generateContent({
+          model,
+          contents: [{ text: singlePrompt }],
+          config: { systemInstruction: instruction.toString(), responseMimeType: 'application/json' as any, temperature: 0.2 }
+        });
       try {
-        // Extract the JSON portion
-        let jsonText = responseText;
-        const codeBlockMatch = responseText.match(/```json\n([\s\S]*)\n```/);
-        if (codeBlockMatch) {
-          jsonText = codeBlockMatch[1];
-        } else {
-          const jsonObjMatch = responseText.match(/\{[\s\S]*"files"[\s\S]*\}/);
-          if (jsonObjMatch) {
-            jsonText = jsonObjMatch[0];
+        const out = await tryModel('gemini-2.5-flash')
+          .catch(() => tryModel('gemini-1.5-flash'))
+          .catch(() => tryModel('gemini-1.5-pro'));
+        const payload = parseFilesJson(out.text || '');
+        if (payload && payload.files && payload.files[0] && payload.files[0].path === targetPath) {
+          const file = payload.files[0];
+          return {
+            path: file.path,
+            content: (file.content || '')
+              .replace(/\\n/g, '\n')
+              .replace(/\\t/g, '\t')
+              .replace(/\\"/g, '"')
+              .replace(/\\\\/g, '\\')
+          };
+        }
+      } catch {}
+      return null;
+    };
+
+    // Batch generation setup
+    const planned = (() => {
+      try { return Array.isArray(planRaw ? JSON.parse(planRaw).files : []) ? JSON.parse(planRaw).files : []; } catch { return []; }
+    })();
+    const desiredPaths: string[] = planned
+      .map((f: any) => (typeof f?.path === 'string' ? f.path : null))
+      .filter(Boolean)
+      .slice(0, 15);
+
+    const maxFilesTotal = 15;
+    const batchSize = 6;
+    let collected: Array<{ path: string; content: string }> = [];
+    const aiReasons: string[] = []
+
+    // Wait for sandbox in parallel while generating files
+    const sandboxResultPromise = sandboxPromise;
+
+    let remaining = desiredPaths.length > 0 ? [...desiredPaths] : [];
+    let safety = 6; // at most 6 batches
+    console.log(`[generate:${requestId}] plan snippet:`, (planRaw || '').slice(0, 400))
+    while (collected.length < maxFilesTotal && safety-- > 0) {
+      const want = remaining.length > 0 ? remaining.slice(0, batchSize) : [];
+      const fileMapSummary = collected.slice(0, 50).map(f => ({ path: f.path, size: f.content.length })).slice(0, 50);
+      const genPrompt = `Generate a batch of files for this project. Return ONLY JSON with {"files":[{"path":"...","content":"..."}],"summary":"..."}. Max ${Math.min(batchSize, maxFilesTotal - collected.length)} files this batch. Ensure TS+JSX correctness, matched tags, and existing imports. Avoid external placeholder images.\n\nPROJECT PLAN:\n${planRaw}\n\nALREADY GENERATED (for context):\n${JSON.stringify(fileMapSummary)}\n\nDESIRED PATHS FOR THIS BATCH (hints, optional):\n${JSON.stringify(want)}`;
+
+      const tryModel = async (model: string) =>
+        gemini.models.generateContent({
+          model,
+          contents: [{ text: genPrompt }],
+          config: { systemInstruction: instruction.toString(), responseMimeType: 'application/json' as any, temperature: 0.3 }
+        });
+
+      let genText = '';
+      try {
+        const out = await tryModel('gemini-2.5-flash')
+          .catch(() => tryModel('gemini-1.5-flash'))
+          .catch(() => tryModel('gemini-1.5-pro'));
+        genText = out.text || '';
+      } catch (e: any) {
+        const code = (e && e.error && e.error.code) || (e?.status) || 'unknown'
+        aiReasons.push(`model_error:${String(code)}`)
+        break; // stop batching on persistent failure
+      }
+
+      console.log(`[generate:${requestId}] batch desired=${want.length} collected=${collected.length}`)
+      console.log(`[generate:${requestId}] batch response len=${(genText||'').length} snippet=${(genText || '').slice(0, 300)}`)
+      let payload = parseFilesJson(genText);
+      if (!payload || !payload.files || payload.files.length === 0) {
+        aiReasons.push('parse_or_empty:batch')
+        // per-batch retry with smaller subset if we had desired paths
+        if (remaining.length > 0) {
+          const tinyWant = remaining.slice(0, Math.max(1, Math.min(3, batchSize - 2)));
+          const tinyPrompt = `Generate a tiny batch of ${tinyWant.length} file(s). Return ONLY JSON with {"files":[...]}.\nPLAN:\n${planRaw}\nWANT:\n${JSON.stringify(tinyWant)}`;
+          try {
+            const out2 = await gemini.models.generateContent({
+              model: 'gemini-2.5-flash',
+              contents: [{ text: tinyPrompt }],
+              config: { systemInstruction: instruction.toString(), responseMimeType: 'application/json' as any, temperature: 0.2 }
+            });
+            payload = parseFilesJson(out2.text || '');
+            console.log(`[generate:${requestId}] tiny retry len=${(out2.text||'').length} parsed=${payload?.files?.length||0}`)
+          } catch {}
+        }
+        if (!payload || !payload.files || payload.files.length === 0) break;
+      }
+
+      // Unescape content and merge uniquely by path; validate each, try single-file regen once if invalid
+      for (const f of payload.files) {
+        if (!f?.path || typeof f.content !== 'string') continue;
+        const normalizedPath = f.path;
+        const content = f.content
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\');
+        let finalContent = content;
+        if (!isLikelyValidFile(normalizedPath, finalContent)) {
+          const retry = await regenerateSingleFile(normalizedPath, 'initial validation failed', collected.slice(0, 30).map(x => ({ path: x.path, size: x.content.length })));
+          if (retry && isLikelyValidFile(retry.path, retry.content)) {
+            finalContent = retry.content;
           }
         }
-        
-        // Fix common JSON issues
-        jsonText = jsonText.replace(/,\s*}/g, '}'); // Remove trailing commas in objects
-        jsonText = jsonText.replace(/,\s*]/g, ']'); // Remove trailing commas in arrays
-        jsonText = jsonText.replace(/,\s*([})\]])/g, '$1'); // Remove commas before closing brackets
-        
-        filesData = JSON.parse(jsonText);
-        console.log('✅ Successfully parsed JSON after cleanup');
-      } catch (manualParseError) {
-        console.error('❌ Manual parse also failed:', manualParseError);
+        const idx = collected.findIndex(x => x.path === normalizedPath);
+        if (idx >= 0) collected[idx] = { path: normalizedPath, content: finalContent };
+        else collected.push({ path: normalizedPath, content: finalContent });
       }
-      
-      // Strategy 2: Ask AI to fix the JSON
-      if (!filesData) {
-        console.log('🔧 Asking AI to regenerate valid JSON...');
-        try {
-          const fixCompletion = await gemini.models.generateContent({
-            model: "gemini-2.0-flash-exp",
-            contents: [{text: `The following JSON is malformed. Please return ONLY valid JSON with no markdown or extra text. Fix any escaped characters or syntax errors:\n\n${responseText.substring(0, 5000)}`}],
-            config: {
-              systemInstruction: "You are a JSON parser. Return ONLY valid JSON, no explanations, no markdown."
+
+      // Update remaining if we had desired list
+      if (remaining.length > 0) {
+        remaining = remaining.filter(p => !collected.some(c => c.path === p));
+      }
+
+      if (collected.length >= maxFilesTotal) break;
+    }
+
+    // If nothing collected, try a minimal scaffold fallback one-shot
+    if (collected.length === 0) {
+      try {
+        const minimalPrompt = `Return ONLY JSON with {"files":[{"path":"src/components/AppShell.tsx","content":"..."}]}. Create at least one TSX component that can be imported into src/App.tsx. No markdown fences.`
+        const out = await gemini.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [{ text: minimalPrompt }],
+          config: { systemInstruction: instruction.toString(), responseMimeType: 'application/json' as any, temperature: 0.2 }
+        })
+        const fallbackPayload = parseFilesJson(out.text || '')
+        if (fallbackPayload && fallbackPayload.files && fallbackPayload.files.length) {
+          for (const f of fallbackPayload.files) {
+            if (typeof f?.path === 'string' && typeof f?.content === 'string') {
+              collected.push({ path: f.path, content: f.content })
             }
-          });
-          
-          const fixText = fixCompletion.text || '';
-          const cleaned = fixText
-            .replace(/```json\n?/g, '')
-            .replace(/```\n?/g, '')
-            // Remove control characters that break JSON
-            .replace(/[\x00-\x1F\x7F]/g, '')
-            .trim();
-          filesData = JSON.parse(cleaned);
-          console.log('✅ AI-assisted parse successful');
-        } catch (aiParseError) {
-          console.error('❌ AI-assisted parse failed:', aiParseError);
+          }
+        } else {
+          aiReasons.push('fallback_minimal_empty')
         }
-      }
-      
-      // Last resort: return error instead of raw text
-      if (!filesData) {
-        console.error('❌ All extraction strategies failed');
-        throw new Error('Failed to parse AI response: Invalid JSON structure. Please try again.');
+      } catch (e: any) {
+        const code = (e && e.error && e.error.code) || (e?.status) || 'unknown'
+        aiReasons.push(`fallback_error:${String(code)}`)
+        console.error('[generate] Minimal scaffold fallback failed:', e)
       }
     }
+
+    // If we have too few files, ask for an expansion batch with required structure
+    if (collected.length > 0 && collected.length < 6) {
+      try {
+        const need = Math.min(maxFilesTotal - collected.length, 6)
+        const expansionPrompt = `Expand the project. Return ONLY JSON with {"files":[...]} and NO markdown fences. Add up to ${need} files prioritizing:
+1) src/pages/LandingPage.tsx (dark themed hero, features, CTA)
+2) src/components/Navbar.tsx
+3) src/components/Footer.tsx
+4) src/components/FeatureGrid.tsx
+5) src/index.css additions (Tailwind-friendly, no JSX)
+6) src/lib/utils.ts
+All files must be TypeScript/TSX where applicable. Ensure they integrate with src/App.tsx.`
+        const out = await gemini.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [{ text: expansionPrompt }],
+          config: { systemInstruction: instruction.toString(), responseMimeType: 'application/json' as any, temperature: 0.25 }
+        })
+        const payload = parseFilesJson(out.text || '')
+        console.log(`[generate:${requestId}] expansion response len=${(out.text||'').length} parsed=${payload?.files?.length||0}`)
+        if (payload && payload.files) {
+          for (const f of payload.files) {
+            if (typeof f?.path === 'string' && typeof f?.content === 'string') {
+              const exists = collected.findIndex(x => x.path === f.path)
+              if (exists >= 0) collected[exists] = { path: f.path, content: f.content }
+              else collected.push({ path: f.path, content: f.content })
+            }
+          }
+        }
+      } catch (e) {
+        console.error(`[generate:${requestId}] Expansion batch failed:`, e)
+      }
+    }
+
+    // Final filesData from batches (or fallback)
+    let filesData: { files: Array<{ path: string; content: string }> } | null = { files: collected.slice(0, maxFilesTotal) };
+    console.log(`[generate:${requestId}] collected total=${filesData.files.length} firstPaths=${filesData.files.slice(0,10).map(f=>f.path).join(', ')}`)
+
+    // If still no files, return diagnostics to the client for visibility
+    if (filesData.files.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: 'AI returned no files',
+        reasons: aiReasons,
+        planSnippet: (planRaw || '').slice(0, 400)
+      }, { status: 502 })
+    }
+    
+    // Wait for sandbox creation to proceed with rest of pipeline
+    const { sandbox, sandboxId } = await sandboxResultPromise;
+
+    // Estimate tokens used from combined text length (rough)
+    tokensUsed += Math.ceil((planRaw.length + collected.reduce((a, f) => a + f.content.length, 0)) / 4);
+
+    // Using batch-generated filesData; legacy single-shot parsing removed.
     
     // Ensure filesData is valid before proceeding
-    if (!filesData || !filesData.files || filesData.files.length === 0) {
-      throw new Error('Failed to parse AI response: No valid files found');
+    if (!filesData || !filesData.files) {
+      filesData = { files: [] }
+    }
+
+    // Enforce max 15 files as guardrail
+    if (filesData.files.length > 15) {
+      filesData.files = filesData.files.slice(0, 15);
     }
 
     try {
@@ -428,7 +458,6 @@ export default function ${componentName}({}: Props) {
       await handler.setupProject(sandbox)
 
       // Start installing dependencies in parallel with file uploads
-      console.log('📦 Installing dependencies...');
       const installPromise = sandbox.process.executeCommand('cd /workspace && npm install');
       
       // Write app files
@@ -437,23 +466,106 @@ export default function ${componentName}({}: Props) {
       await sandbox.fs.uploadFile(Buffer.from(indexCss), '/workspace/src/index.css');
       
       // Upload all generated files (with validation)
-      console.log(`Uploading ${filesData.files.length} generated files...`);
       for (const file of filesData.files) {
         // Map app/ paths to src/ for Vite
         const filePath = file.path.replace('app/', 'src/');
         const fullPath = `/workspace/${filePath}`;
         let content = file.content;
+
+        // Sanitize CSS files to avoid JSX or component tokens leaking into CSS
+        if (fullPath.endsWith('.css')) {
+          try {
+            // Remove obvious non-CSS tokens
+            content = content
+              .split('\n')
+              .filter(line => !/FontAwesomeIcon|<\/?[A-Za-z]/.test(line) && !/^\s*import\s+/.test(line))
+              .join('\n');
+          } catch {}
+        }
+        
+          // CRITICAL: Add FontAwesome imports if icons are used but imports are missing
+        if (content.includes('FontAwesomeIcon') || content.includes('fa')) {
+          // Add FontAwesomeIcon import
+          if (!content.includes('@fortawesome/react-fontawesome')) {
+            const importLine = "import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';\n";
+            const firstImportIndex = content.indexOf("import ");
+            if (firstImportIndex !== -1) {
+              content = content.slice(0, firstImportIndex) + importLine + content.slice(firstImportIndex);
+            } else {
+              content = importLine + content;
+            }
+          }
+
+          // Extract fa icon names from the content
+          const faIconMatches = content.match(/fa[A-Z]\w+/g) || [];
+          if (faIconMatches.length > 0) {
+            const uniqueIcons = Array.from(new Set(faIconMatches));
+
+            // Categorize icons by package
+            const solidIcons = [];
+            const brandIcons = [];
+            const regularIcons = [];
+
+            for (const icon of uniqueIcons) {
+              // Social media and brand icons go to brands package
+              if (icon.includes('Twitter') || icon.includes('Discord') || icon.includes('Github') ||
+                  icon.includes('Facebook') || icon.includes('Instagram') || icon.includes('Linkedin') ||
+                  icon.includes('Youtube') || icon.includes('Gitlab') || icon.includes('Slack') ||
+                  icon.includes('Telegram') || icon.includes('Whatsapp')) {
+                brandIcons.push(icon);
+              }
+              // Regular icons (circle, square, etc.) go to regular package
+              else if (icon.includes('Circle') || icon.includes('Square') || icon.includes('Rectangle') ||
+                       icon.includes('Triangle') || icon.includes('Diamond') || icon.includes('Hexagon')) {
+                regularIcons.push(icon);
+              }
+              // Everything else goes to solid (default)
+              else {
+                solidIcons.push(icon);
+              }
+            }
+
+            // Add solid icons import
+            if (solidIcons.length > 0 && !content.includes('@fortawesome/free-solid-svg-icons')) {
+              const iconImportLine = `import { ${solidIcons.join(', ')} } from '@fortawesome/free-solid-svg-icons';\n`;
+              const firstImportIndex = content.indexOf("import ");
+              if (firstImportIndex !== -1) {
+                content = content.slice(0, firstImportIndex) + iconImportLine + content.slice(firstImportIndex);
+              } else {
+                content = iconImportLine + content;
+              }
+            }
+
+            // Add brand icons import
+            if (brandIcons.length > 0 && !content.includes('@fortawesome/free-brands-svg-icons')) {
+              const iconImportLine = `import { ${brandIcons.join(', ')} } from '@fortawesome/free-brands-svg-icons';\n`;
+              const firstImportIndex = content.indexOf("import ");
+              if (firstImportIndex !== -1) {
+                content = content.slice(0, firstImportIndex) + iconImportLine + content.slice(firstImportIndex);
+              } else {
+                content = iconImportLine + content;
+              }
+            }
+
+            // Add regular icons import
+            if (regularIcons.length > 0 && !content.includes('@fortawesome/free-regular-svg-icons')) {
+              const iconImportLine = `import { ${regularIcons.join(', ')} } from '@fortawesome/free-regular-svg-icons';\n`;
+              const firstImportIndex = content.indexOf("import ");
+              if (firstImportIndex !== -1) {
+                content = content.slice(0, firstImportIndex) + iconImportLine + content.slice(firstImportIndex);
+              } else {
+                content = iconImportLine + content;
+              }
+            }
+          }
+        }
         
         // CRITICAL: Final validation before upload - check if content is still JSON
         if (content.trim().startsWith('{') && (content.includes('"files"') || content.includes('"path"'))) {
-          console.error(`❌ CRITICAL: File ${file.path} still contains JSON structure!`);
-          console.log('🔧 Attempting emergency extraction...');
-          
           try {
             const emergency = JSON.parse(content);
             if (emergency.files && emergency.files[0]) {
               content = emergency.files[0].content;
-              console.log('✅ Emergency extraction successful');
             }
           } catch (e) {
             // Regex fallback
@@ -464,9 +576,6 @@ export default function ${componentName}({}: Props) {
                 .replace(/\\t/g, '\t')
                 .replace(/\\"/g, '"')
                 .replace(/\\\\/g, '\\');
-              console.log('✅ Emergency regex extraction successful');
-            } else {
-              console.error('❌ Emergency extraction failed - uploading as-is and relying on preflight');
             }
           }
         }
@@ -474,19 +583,24 @@ export default function ${componentName}({}: Props) {
         // Note: Vite doesn't need 'use client' directive like Next.js
         // React components in Vite are client-side by default
         
-        console.log(`Uploading: ${fullPath}`);
+        // Fix unreliable placeholder image URLs
+        if (content.includes('via.placeholder.com') || content.includes('placeholder.com') || content.includes('lorempixel.com')) {
+          // Replace placeholder URLs with SVG data URLs
+          content = content
+            .replace(/https?:\/\/[^"'\s]*placeholder\.com[^"'\s]*/g, 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgdmlld0JveD0iMCAwIDE1MCAxNTAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIxNTAiIGhlaWdodD0iMTUwIiBmaWxsPSIjRjNGNEY2Ii8+Cjx0ZXh0IHg9Ijc1IiB5PSI3NSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzlDQTNBRiIgZm9udC1zaXplPSIxNCI+UGxhY2Vob2xkZXI8L3RleHQ+Cjwvc3ZnPg==')
+            .replace(/https?:\/\/[^"'\s]*via\.placeholder\.com[^"'\s]*/g, 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgdmlld0JveD0iMCAwIDE1MCAxNTAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIxNTAiIGhlaWdodD0iMTUwIiBmaWxsPSIjRjNGNEY2Ii8+Cjx0ZXh0IHg9Ijc1IiB5PSI3NSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzlDQTNBRiIgZm9udC1zaXplPSIxNCI+UGxhY2Vob2xkZXI8L3RleHQ+Cjwvc3ZnPg==')
+            .replace(/https?:\/\/[^"'\s]*lorempixel\.com[^"'\s]*/g, 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgdmlld0JveD0iMCAwIDE1MCAxNTAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIxNTAiIGhlaWdodD0iMTUwIiBmaWxsPSIjRjNGNEY2Ii8+Cjx0ZXh0IHg9Ijc1IiB5PSI3NSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzlDQTNBRiIgZm9udC1zaXplPSIxNCI+UGxhY2Vob2xkZXI8L3RleHQ+Cjwvc3ZnPg==');
+        }
+
         await sandbox.fs.uploadFile(Buffer.from(content), fullPath);
       }
 
       // Wait for dependency installation to complete
-      console.log('⏳ Waiting for dependencies to install...');
       await installPromise;
-      console.log('✅ Dependencies installed successfully');
       
       // ============================================================
       // PREFLIGHT TEST & AUTO-DEBUGGING
       // ============================================================
-      console.log('🔍 Running preflight checks...');
       
       let hasErrors = true;
       let debugAttempts = 0;
@@ -494,7 +608,6 @@ export default function ${componentName}({}: Props) {
       
       while (hasErrors && debugAttempts < MAX_DEBUG_ATTEMPTS) {
         debugAttempts++;
-        console.log(`Preflight attempt ${debugAttempts}/${MAX_DEBUG_ATTEMPTS}`);
         
         // Check for TypeScript errors
         const tsCheckResult = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit 2>&1 || true');
@@ -502,9 +615,6 @@ export default function ${componentName}({}: Props) {
         
         // Skip lint check for Vite projects (no ESLint configured in template)
         const lintErrors = '';
-        
-        console.log('TypeScript check:', tsErrors.substring(0, 500));
-        console.log('Lint check:', lintErrors.substring(0, 500));
         
         // Check if there are critical errors
         const hasTsErrors = tsErrors.includes('error TS');
@@ -515,41 +625,22 @@ export default function ${componentName}({}: Props) {
         const hasStringLiteralError = tsErrors.includes('TS1002') || tsErrors.includes('Unterminated string literal');
         
         if (!hasTsErrors && !hasSyntaxErrors && !hasMissingImports && !hasJsonError && !hasJsxError && !hasStringLiteralError) {
-          console.log('✅ Preflight checks passed!');
           hasErrors = false;
           break;
         }
         
-        if (hasJsonError) {
-          console.error('🚨 JSON structure detected in code file!');
-        }
-        
-        if (hasJsxError) {
-          console.error('🚨 JSX syntax error detected!');
-        }
-
-        if (hasStringLiteralError) {
-          console.error('🚨 Unterminated string literal detected!');
-        }
-        
         if (debugAttempts >= MAX_DEBUG_ATTEMPTS) {
-          console.warn('⚠️ Max debug attempts reached, proceeding anyway');
           break;
         }
-        
-        // Auto-fix common issues
-        console.log(`🔧 Attempting auto-fix (attempt ${debugAttempts})...`);
         
         // Check which file has the JSX error from the preflight output
         // Match patterns like: src/components/Header.tsx(19,6): or src/App.tsx
         const errorFileMatch = tsErrors.match(/(?:^|\n)(src\/[^\s(]+\.tsx)/m);
         if (!errorFileMatch || !errorFileMatch[1]) {
-          console.log('⚠️ Could not determine error file from:', tsErrors.substring(0, 200));
           break;
         }
         
         const filePath = `/workspace/${errorFileMatch[1]}`;
-        console.log(`Attempting to fix file: ${filePath}`);
         
         // Check if file exists before trying to download
         let pageText = '';
@@ -568,19 +659,14 @@ export default function ${componentName}({}: Props) {
         // Fix 1: Check if content starts with JSON (invalid code) - DO THIS FIRST
         const trimmedContent = fixedContent.trim();
         if (trimmedContent.startsWith('{') && (trimmedContent.includes('"files"') || trimmedContent.includes('"path"'))) {
-          console.log('🔧 Detected JSON wrapper in code, extracting actual code');
           try {
             // Try to parse as full JSON response
             const jsonMatch = JSON.parse(fixedContent);
             if (jsonMatch.files && Array.isArray(jsonMatch.files) && jsonMatch.files[0]) {
               fixedContent = jsonMatch.files[0].content;
-              console.log('✅ Extracted code from JSON wrapper');
               needsFix = true;
             }
           } catch (e) {
-            // If full parse fails, try regex extraction
-            console.log('Could not parse as complete JSON, trying regex extraction');
-            
             // Try to find "content": "..." pattern
             const contentMatch = fixedContent.match(/"content":\s*"((?:[^"\\]|\\[\s\S])*)"/);
             if (contentMatch) {
@@ -589,7 +675,6 @@ export default function ${componentName}({}: Props) {
                 .replace(/\\t/g, '\t')
                 .replace(/\\"/g, '"')
                 .replace(/\\\\/g, '\\');
-              console.log('✅ Extracted code using regex');
               needsFix = true;
             } else {
               // Last resort: try to extract everything after first "content": until last }
@@ -600,7 +685,6 @@ export default function ${componentName}({}: Props) {
                   .replace(/\\t/g, '\t')
                   .replace(/\\"/g, '"')
                   .replace(/\\\\/g, '\\');
-                console.log('✅ Extracted code using fallback regex');
                 needsFix = true;
               }
             }
@@ -611,7 +695,6 @@ export default function ${componentName}({}: Props) {
         
         // Fix 3: If string literal errors detected, try to fix them
         if (hasStringLiteralError && !needsFix) {
-          console.log('🔧 Unterminated string literal detected, attempting to fix...');
           try {
             // Find lines with unterminated strings by looking for odd number of quotes
             const lines = fixedContent.split('\n');
@@ -625,8 +708,6 @@ export default function ${componentName}({}: Props) {
 
               // If we have odd number of quotes, likely unterminated string
               if (singleQuotes % 2 !== 0 || doubleQuotes % 2 !== 0) {
-                console.log(`Found potential unterminated string on line ${i + 1}: ${line.substring(0, 100)}`);
-
                 // Try to fix by escaping quotes or adding closing quotes
                 let fixedLine = line;
 
@@ -643,7 +724,6 @@ export default function ${componentName}({}: Props) {
                 if (fixedLine !== line) {
                   fixedLines[i] = fixedLine;
                   hasFixes = true;
-                  console.log(`Fixed line ${i + 1}`);
                 }
               }
             }
@@ -651,16 +731,62 @@ export default function ${componentName}({}: Props) {
             if (hasFixes) {
               fixedContent = fixedLines.join('\n');
               needsFix = true;
-              console.log('✅ Fixed unterminated string literals');
             }
           } catch (fixError) {
             console.error('String literal fix failed:', fixError);
           }
         }
 
-        // Fix 4: If JSX errors detected, ask AI to fix them
+        // Fix 4: Manual JSX fixes first
         if (hasJsxError && !needsFix) {
-          console.log('🔧 JSX errors detected, asking AI to fix...');
+          let manualFixed = pageText;
+
+          // Fix 1: Add parent wrapper if multiple root elements
+          if (tsErrors.includes('JSX expressions must have one parent element')) {
+            // Look for return statement with multiple JSX elements
+            const returnMatch = manualFixed.match(/return\s*\(\s*([\s\S]*?)\s*\)/);
+            if (returnMatch) {
+              const returnContent = returnMatch[1];
+              // Check if it starts with < and has multiple top-level elements
+              if (returnContent.includes('<') && !returnContent.trim().startsWith('<>') && !returnContent.trim().startsWith('<div') && !returnContent.trim().startsWith('<React.Fragment')) {
+                // Count top-level JSX elements
+                const topLevelJsx = returnContent.match(/<[^/][^>]*>/g) || [];
+                if (topLevelJsx.length > 1) {
+                  manualFixed = manualFixed.replace(
+                    /return\s*\(\s*([\s\S]*?)\s*\)/,
+                    'return (\n    <div>\n      $1\n    </div>\n  )'
+                  );
+                }
+              }
+            }
+          }
+
+          // Fix 2: Escape HTML angle brackets in strings
+          if (tsErrors.includes('Unexpected token') && tsErrors.includes('>')) {
+            manualFixed = manualFixed.replace(/([^\\])</g, '$1&lt;').replace(/([^\\])>/g, '$1&gt;');
+          }
+
+          // Fix 3: Fix unclosed JSX tags
+          if (tsErrors.includes('Expected corresponding JSX closing tag')) {
+            // Simple fix: ensure common tags are closed
+            const commonTags = ['div', 'section', 'p', 'h1', 'h2', 'h3', 'span', 'button'];
+            for (const tag of commonTags) {
+              const openCount = (manualFixed.match(new RegExp(`<${tag}[^>]*>`, 'g')) || []).length;
+              const closeCount = (manualFixed.match(new RegExp(`</${tag}>`, 'g')) || []).length;
+              if (openCount > closeCount) {
+                manualFixed += `\n    </${tag}>`;
+              }
+            }
+          }
+
+          if (manualFixed !== pageText) {
+            fixedContent = manualFixed;
+            needsFix = true;
+          }
+        }
+
+        // Fix 5: If manual fixes didn't work or there are still JSX errors, ask AI to fix them
+        if (hasJsxError && !needsFix) {
           try {
             const jsxFixCompletion = await openai.chat.completions.create({
               model: "gpt-4o-mini",
@@ -684,7 +810,6 @@ export default function ${componentName}({}: Props) {
             if (cleaned.length > 100) {
               fixedContent = cleaned;
               needsFix = true;
-              console.log('✅ AI fixed JSX syntax errors');
             }
           } catch (aiError) {
             console.error('AI fix failed:', aiError);
@@ -692,12 +817,10 @@ export default function ${componentName}({}: Props) {
         }
         
         if (needsFix) {
-          console.log('🔧 Applying fixes to page.tsx');
           await sandbox.fs.uploadFile(Buffer.from(fixedContent), '/workspace/src/App.tsx');
           // Continue loop to re-check
           continue;
         } else {
-          console.log('⚠️ Could not auto-fix errors, proceeding anyway');
           break;
         }
       }
@@ -802,16 +925,84 @@ export default function ${componentName}({}: Props) {
       }
       
       
-      // Build the project for production
-      console.log('🔨 Building project for production...');
-      const buildResult = await sandbox.process.executeCommand('cd /workspace && npm run build');
-
-      if (buildResult.result?.includes('error') || buildResult.result?.includes('Error')) {
-        console.error('Build failed:', buildResult.result);
-        throw new Error('Build failed: ' + buildResult.result);
+      // Build with self-healing retries for JSX/tag issues
+      let buildOk = false
+      for (let attempt = 0; attempt < 2; attempt++) {
+        console.log(`🔨 Building project for production (attempt ${attempt + 1})...`);
+        const buildResult = await sandbox.process.executeCommand('cd /workspace && npm run build');
+        const output = buildResult.result || ''
+        if (!output.includes('error') && !output.includes('Error')) {
+          buildOk = true
+          console.log('✅ Build completed successfully')
+          break
+        }
+        console.error('Build failed:', output)
+        // Run tsc to get precise TypeScript/JSX errors
+        const tsOut = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit 2>&1 || true')
+        const tsText = tsOut.result || ''
+        console.log('tsc output snippet:', tsText.slice(0, 500))
+        // Extract offending TSX files
+        const fileMatches = Array.from(tsText.matchAll(/src\/[\w\/.-]+\.tsx/g)).map(m => m[0])
+        const uniqFiles = Array.from(new Set(fileMatches)).slice(0, 8)
+        for (const rel of uniqFiles) {
+          try {
+            const abs = `/workspace/${rel}`
+            const buf = await sandbox.fs.downloadFile(abs)
+            let code = buf.toString('utf-8')
+            let fixed = code
+            // Remove markdown fences if any
+            fixed = fixed.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '')
+            // Ensure single root wrapper in return
+            fixed = fixed.replace(/return\s*\(([\s\S]*?)\);?/m, (m, inner) => {
+              const trimmed = String(inner).trim()
+              if (!/^<([A-Za-z]|>|React\.)/.test(trimmed) || /^<>([\s\S]*)<\/?>$/.test(trimmed) || /^<div[\s\S]*<\/div>$/.test(trimmed)) return m
+              return `return (\n  <div>\n${inner}\n  </div>\n)`
+            })
+            // Close common tags if unbalanced
+            const common = ['div','section','main','header','footer','span']
+            for (const tag of common) {
+              const open = (fixed.match(new RegExp(`<${tag}(\s|>)`, 'g'))||[]).length
+              const close = (fixed.match(new RegExp(`</${tag}>`, 'g'))||[]).length
+              if (open > close) fixed += `\n</${tag}>`.repeat(open - close)
+            }
+            // Strip invalid high unicode/control chars
+            fixed = fixed.replace(/[\u0000-\u001F\u007F]/g, '')
+            if (fixed !== code) {
+              await sandbox.fs.uploadFile(Buffer.from(fixed), abs)
+              console.log('Applied auto-fix to', rel)
+            }
+          } catch (e) {
+            console.error('Auto-fix failed for', rel, e)
+          }
+        }
+        // If still failing after auto fixes, try focused AI fix on the first offending file
+        if (uniqFiles.length) {
+          try {
+            const rel = uniqFiles[0]
+            const abs = `/workspace/${rel}`
+            const buf = await sandbox.fs.downloadFile(abs)
+            const src = buf.toString('utf-8')
+            const aiFix = await openai.chat.completions.create({
+              model: 'gpt-4o-mini',
+              messages: [
+                { role: 'system', content: 'Fix JSX/TypeScript syntax errors. Return ONLY corrected code, no fences.' },
+                { role: 'user', content: `Errors:\n${tsText.slice(0,800)}\n\nFile ${rel}:\n${src}` }
+              ],
+              temperature: 0.2,
+              max_tokens: 4000
+            })
+            const fixed = (aiFix.choices[0]?.message?.content || '').replace(/```[a-zA-Z]*\n?/g,'').replace(/```/g,'').trim()
+            if (fixed && fixed.length > 50) {
+              await sandbox.fs.uploadFile(Buffer.from(fixed), abs)
+              console.log('Applied AI fix to', rel)
+            }
+          } catch (e) {
+            console.error('AI fix failed:', e)
+          }
+        }
+        // Next loop iteration will retry build
       }
-
-      console.log('✅ Build completed successfully');
+      if (!buildOk) throw new Error('Build failed after auto-repair attempts')
 
       // Collect all built files from dist folder
       console.log('📦 Collecting built files...');
@@ -850,15 +1041,64 @@ export default function ${componentName}({}: Props) {
 
       console.log('✅ Build uploaded successfully');
 
+      // Add cache-busting parameter to ensure fresh loads
+      const cacheBustUrl = `${uploadResult.url}?t=${Date.now()}`;
+
       // Update project with final URL and status
       await updateProject(projectId, {
-        preview_url: uploadResult.url,
+        preview_url: cacheBustUrl,
         status: 'active'
       });
 
-      // Save project files to database
+      // Save project files to database with build versioning (if available)
       if (projectId) {
-        await saveProjectFiles(projectId, allFiles);
+        const { createBuild, finalizeBuild, saveProjectFilesToBuild, updateBuild, getProjectById } = await import('@/lib/db')
+        let buildRecord: any = null
+        try {
+          const storagePath = `${userId}/${projectId}`
+          buildRecord = await createBuild(projectId, userId, { storage_path: storagePath, build_hash: uploadResult.buildHash })
+        } catch {}
+        try {
+          await saveProjectFilesToBuild(projectId, buildRecord?.id ?? null, allFiles)
+          // Optional GitHub commit + tag
+          try {
+            const projectRow = await getProjectById(projectId)
+            const repoUrl = projectRow?.github_repo_url as string | null
+            if (repoUrl && process.env.GITHUB_TOKEN) {
+              const { commitFilesToRepo, createTag } = await import('@/lib/github')
+              const commit = await commitFilesToRepo(repoUrl, allFiles, `build v${(buildRecord?.version ?? '')}`)
+              const tagName = `v${buildRecord?.version}`
+              await createTag(repoUrl, commit.commitSha, tagName)
+              if (buildRecord?.id) {
+                await updateBuild(buildRecord.id, { git_repo_url: repoUrl, git_commit_sha: commit.commitSha, git_tag: tagName })
+              }
+            }
+          } catch (ghErr) {
+            console.error('GitHub integration failed:', ghErr)
+          }
+          // Index files into vector DB for semantic amend
+          try {
+            const { embedTexts, codeAwareChunks } = await import('@/lib/embeddings')
+            const { saveFileChunks } = await import('@/lib/db')
+            const allChunks: Array<{ file_path: string; chunk_index: number; content: string }> = []
+            for (const f of allFiles) {
+              const parts = codeAwareChunks(f.path, f.content)
+              parts.forEach((p, i) => allChunks.push({ file_path: f.path, chunk_index: i, content: p }))
+            }
+            const embeddings = await embedTexts(allChunks.map(c => c.content))
+            const chunkRows = allChunks.map((c, idx) => ({ file_path: c.file_path, chunk_index: c.chunk_index, content: c.content, embedding: embeddings[idx] }))
+            await saveFileChunks(projectId, buildRecord?.id ?? null, chunkRows)
+          } catch (embErr) {
+            console.error('Embedding index failed:', embErr)
+          }
+
+          await finalizeBuild(buildRecord?.id ?? null, 'success')
+          await updateProject(projectId, { build_version: buildRecord?.version ?? undefined })
+        } catch (e) {
+          await finalizeBuild(buildRecord?.id ?? null, 'failed')
+          // Also save without build as fallback
+          await saveProjectFiles(projectId, allFiles)
+        }
       }
 
       // Increment user usage
@@ -881,7 +1121,7 @@ export default function ${componentName}({}: Props) {
         success: true,
         projectId: projectId,
         sandboxId: sandboxId,
-        url: uploadResult.url,
+        url: cacheBustUrl,
         files: allFiles,
         generationsRemaining: limits.generationsRemaining - 1,
         message: `Vite project built and deployed with ${allFiles.length} files`,
@@ -890,12 +1130,10 @@ export default function ${componentName}({}: Props) {
       });
 
     } catch (execError) {
-      console.error('Execution error:', execError);
+      console.error('[generate] Execution error:', execError);
       return NextResponse.json({
         success: false,
-        sandboxId: sandboxId,
-        error: 'Failed to set up Next.js project in sandbox',
-        files: filesData.files,
+        error: 'Failed to set up Vite project in sandbox',
         details: execError instanceof Error ? execError.message : 'Unknown error'
       }, { status: 500 });
     }

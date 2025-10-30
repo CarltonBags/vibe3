@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
+import dynamic from 'next/dynamic'
 import { useSearchParams } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import AuthModal from './components/AuthModal'
@@ -28,7 +29,7 @@ interface SandboxResponse {
 }
 
 type ViewMode = 'preview' | 'code';
-type PageSection = 'home' | 'features' | 'pricing' | 'about' | 'generate';
+type PageSection = 'home' | 'integrations' | 'pricing' | 'about' | 'generate';
 
 export default function Home() {
   const { user, loading: authLoading } = useAuth()
@@ -43,10 +44,77 @@ export default function Home() {
   const [error, setError] = useState('')
   const [viewMode, setViewMode] = useState<ViewMode>('preview')
   const [selectedFile, setSelectedFile] = useState<string>('app/page.tsx')
+  const [editedFiles, setEditedFiles] = useState<Record<string, string>>({})
+  const MonacoEditor = typeof window !== 'undefined' ? dynamic(() => import('@monaco-editor/react'), { ssr: false }) : (null as any)
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [amendmentHistory, setAmendmentHistory] = useState<string[]>([])
   const [currentSection, setCurrentSection] = useState<PageSection>('home')
+  const [isDebugging, setIsDebugging] = useState(false)
+  const [debugResults, setDebugResults] = useState<any>(null)
   const hasStartedRef = useRef(false)
+  const editorOptions = useMemo(() => ({
+    minimap: { enabled: false },
+    wordWrap: 'on',
+    fontSize: 13,
+    readOnly: false,
+    quickSuggestions: false,
+    parameterHints: { enabled: false },
+    suggestOnTriggerCharacters: false,
+    hover: { enabled: false },
+    lightbulb: { enabled: false },
+    codeLens: false,
+    tabCompletion: 'off',
+    autoClosingBrackets: 'never',
+    autoClosingQuotes: 'never'
+  }), [])
+
+  const handleSaveBuild = async () => {
+    try {
+      if (!sandboxData?.projectId) {
+        alert('No project to save.');
+        return;
+      }
+      const filesToSave = Object.entries(editedFiles)
+        .filter(([_, content]) => typeof content === 'string')
+        .map(([path, content]) => ({ path, content }))
+
+      if (filesToSave.length === 0) {
+        alert('No changes to save.');
+        return;
+      }
+
+      setProgress('💾 Saving changes and rebuilding...')
+      const res = await fetch(`/api/projects/${sandboxData.projectId}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: filesToSave })
+      })
+
+      const data = await res.json().catch(() => ({} as any))
+      if (!res.ok) {
+        throw new Error((data && data.error) || 'Save & Build failed')
+      }
+
+      // Clear local edits that were accepted
+      setEditedFiles(prev => {
+        const next = { ...prev }
+        for (const f of filesToSave) delete next[f.path]
+        return next
+      })
+
+      // Update preview URL and files list
+      if (data && data.url) {
+        setSandboxData(prev => prev ? { ...prev, url: data.url, files: data.files || prev.files, lastModified: Date.now() } : prev)
+      }
+
+      setProgress('✅ Saved and rebuilt!')
+      setTimeout(() => setProgress(''), 2000)
+    } catch (err) {
+      console.error('Save & Build error:', err)
+      setError(err instanceof Error ? err.message : 'Save & Build failed')
+      setProgress('')
+    }
+  }
 
   // Navigation functions
   const scrollToSection = (section: PageSection) => {
@@ -108,21 +176,30 @@ export default function Home() {
       const projectName = searchParams.get('projectName')
 
       // Handle existing project viewing (no sandbox, just preview)
-      if (projectId && previewUrl && !hasGenerated) {
+      if (projectId && !hasGenerated) {
         setHasGenerated(true)
-        setProgress('🚀 Loading your project...')
+        setProgress('Loading your project...')
 
-        // Fetch project files
-        fetch(`/api/projects/${projectId}/files`)
-          .then(res => res.json())
-          .then(data => {
-        setSandboxData({
-          success: true,
-          sandboxId: '', // No sandbox in preview-only mode
-          projectId: projectId, // Store project ID for amendments
-          url: previewUrl, // Use preview URL directly
-          files: data.files || []
-        })
+        // Fetch project data and files
+        Promise.all([
+          fetch(`/api/projects/${projectId}`).then(res => res.json()),
+          fetch(`/api/projects/${projectId}/files`).then(res => res.json())
+        ])
+          .then(([projectData, filesData]) => {
+            // Use URL param previewUrl if available, otherwise use stored preview_url
+            const finalPreviewUrl = previewUrl || projectData.preview_url;
+
+            if (!finalPreviewUrl) {
+              throw new Error('No preview URL available');
+            }
+
+            setSandboxData({
+              success: true,
+              sandboxId: '', // No sandbox in preview-only mode
+              projectId: projectId, // Store project ID for amendments
+              url: finalPreviewUrl, // Use the most up-to-date preview URL
+              files: filesData.files || []
+            })
             setProgress('')
           })
           .catch(err => {
@@ -135,7 +212,7 @@ export default function Home() {
       else if (projectId && sandboxUrl && sandboxId && !hasGenerated) {
         setIsGenerating(true)
         setHasGenerated(true)
-        setProgress('🚀 Loading your project...')
+        setProgress(' Loading your project...')
 
         // Fetch project files
         fetch(`/api/projects/${projectId}/files`)
@@ -192,17 +269,17 @@ export default function Home() {
     hasStartedRef.current = true
     setHasGenerated(true)
     setIsGenerating(true)
-    setProgress('🤖 Generating code with AI...')
+    setProgress('Generating code with AI...')
     setError('') // Clear previous errors
     
     try {
       // Simulate progress updates
       const progressTimer = setInterval(() => {
         setProgress(prev => {
-          if (prev.includes('Generating')) return '📦 Creating sandbox environment...'
-          if (prev.includes('Creating')) return '📁 Setting up Next.js project...'
-          if (prev.includes('Setting')) return '⚙️ Installing dependencies...'
-          if (prev.includes('Installing')) return '🚀 Starting development server...'
+          if (prev.includes('Generating')) return 'Creating sandbox environment...'
+          if (prev.includes('Creating')) return 'Setting up project...'
+          if (prev.includes('Setting')) return 'Installing dependencies...'
+          if (prev.includes('Installing')) return 'Starting development server...'
           return prev
         })
       }, 8000)
@@ -241,6 +318,14 @@ export default function Home() {
       }
       
       if (!res.ok) {
+        console.error('Generate failed status:', res.status, res.statusText)
+        try {
+          const err = await res.json()
+          console.error('Generate failed:', err)
+        } catch {
+          const txt = await res.text().catch(() => '')
+          console.error('Generate failed (raw):', txt)
+        }
         throw new Error('Failed to create sandbox')
       }
 
@@ -329,11 +414,11 @@ export default function Home() {
       if (data.success) {
         // Add to history
         setAmendmentHistory(prev => [...prev, amendmentPrompt])
-        
+
         // Clear amendment input
         setAmendmentPrompt('')
         setProgress(`✨ ${data.summary}`)
-        
+
         // Update sandbox data with new files
         const updatedSandboxData = {
           ...sandboxData,
@@ -344,11 +429,17 @@ export default function Home() {
           tokensUsed: data.tokensUsed || sandboxData.tokensUsed // Preserve or update token count
         }
         setSandboxData(updatedSandboxData)
-        
-        // Force a complete reload of the preview
+
+        // Force a complete reload of the preview by clearing and resetting
         setTimeout(() => {
           // Clear success message
           setProgress('')
+          // Force iframe reload by updating the URL with a new timestamp
+          setSandboxData(prev => prev && prev.url ? {
+            ...prev,
+            url: `${prev.url.split('?')[0]}?t=${Date.now()}`,
+            lastModified: Date.now()
+          } : prev);
         }, 3000)
       }
     } catch (err) {
@@ -359,6 +450,61 @@ export default function Home() {
     }
   }
 
+  const handleDebug = async () => {
+    if (!sandboxData || isDebugging) {
+      return
+    }
+
+    setIsDebugging(true)
+    setError('')
+    setProgress('🔧 Scanning code for issues...')
+    setDebugResults(null)
+
+    try {
+      const projectId = sandboxData.projectId || searchParams.get('projectId')
+
+      if (!projectId) {
+        throw new Error('No project ID available')
+      }
+
+      const response = await fetch('/api/debug', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: projectId
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to debug code')
+      }
+
+      setDebugResults(data)
+      setProgress(data.message || 'Debug scan complete')
+
+      // If fixes were applied, refresh the preview
+      if (data.fixesApplied > 0) {
+        setTimeout(() => {
+          // Force iframe reload with cache busting
+          setSandboxData(prev => prev && prev.url ? {
+            ...prev,
+            url: `${prev.url.split('?')[0]}?t=${Date.now()}`,
+            lastModified: Date.now()
+          } : prev);
+        }, 2000)
+      }
+
+    } catch (err) {
+      console.error('Debug error:', err)
+      setError(err instanceof Error ? err.message : 'Failed to debug code')
+      setProgress('')
+    } finally {
+      setIsDebugging(false)
+    }
+  }
+
   // If showing a project (generated or from URL), show the project interface
   if (hasGenerated) {
     return (
@@ -366,7 +512,14 @@ export default function Home() {
         <main className="min-h-screen flex bg-black">
           {/* Top Left - Vibe Logo */}
           <button
-            onClick={() => scrollToSection('home')}
+            onClick={() => {
+              setHasGenerated(false)
+              setCurrentSection('home')
+              // Clear URL params to prevent auto-reloading project
+              if (typeof window !== 'undefined') {
+                window.history.replaceState({}, '', '/')
+              }
+            }}
             className="fixed top-4 left-4 z-40 text-2xl font-bold cursor-pointer hover:opacity-80 transition-opacity"
             style={{
               backgroundImage: 'url(/vibe_gradient.png)',
@@ -380,28 +533,6 @@ export default function Home() {
             vibe
           </button>
 
-          {/* Top Right - Usage Indicator + User Menu */}
-          <div className="fixed top-4 right-4 z-40 flex items-center gap-4">
-            {/* Usage Indicator (only when logged in) */}
-            {user && <UsageIndicator />}
-
-            {/* User Menu or Sign In Button */}
-            {user ? (
-              <UserMenu />
-            ) : (
-              <button
-                onClick={() => setShowAuthModal(true)}
-                className="px-6 py-2 rounded-lg font-medium transition-all"
-                style={{
-                  backgroundImage: 'url(/vibe_gradient.png)',
-                  backgroundSize: 'cover',
-                  backgroundPosition: 'center'
-                }}
-              >
-                <span className="text-white drop-shadow-lg">Sign In</span>
-              </button>
-            )}
-          </div>
 
         {/* Left Panel - Input & Status */}
         <div className={`${hasGenerated ? 'w-1/3' : 'w-full'} transition-all duration-500 flex flex-col bg-black p-8`}>
@@ -508,6 +639,56 @@ export default function Home() {
                   </div>
                 </form>
 
+                {/* Debug Button */}
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleDebug}
+                    disabled={isDebugging}
+                    className="flex-1 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-800 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isDebugging ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                        <span>Scanning...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span>Debug Code</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Debug Results */}
+                {debugResults && (
+                  <div className="bg-gray-800/20 rounded-lg p-3 border border-gray-700/50">
+                    <p className="text-xs text-gray-500 mb-2">Debug Results:</p>
+                    <div className="space-y-2">
+                      <p className="text-xs text-gray-300">{debugResults.analysis}</p>
+                      {debugResults.fixes && debugResults.fixes.length > 0 && (
+                        <div className="space-y-1">
+                          <p className="text-xs text-green-400">Fixes applied:</p>
+                          {debugResults.fixes.map((fix: any, idx: number) => (
+                            <div key={idx} className="flex items-start gap-2">
+                              <span className="text-green-400 text-xs mt-0.5">✓</span>
+                              <div className="flex-1">
+                                <p className="text-xs text-gray-300 font-mono">{fix.file}</p>
+                                <p className="text-xs text-gray-400">{fix.explanation}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {debugResults.remainingIssues && (
+                        <p className="text-xs text-yellow-400">⚠️ Some issues may remain - manual review recommended</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* Amendment History */}
                 {amendmentHistory.length > 0 && (
                   <div className="bg-gray-800/20 rounded-lg p-3 border border-gray-700/50">
@@ -604,7 +785,7 @@ export default function Home() {
       {hasGenerated && sandboxData?.url && (
         <div className="w-2/3 bg-gray-900 flex flex-col">
           {/* Tab Bar */}
-          <div className="bg-gray-800 px-4 py-2 flex items-center justify-between border-b border-gray-700">
+          <div className="bg-gray-800 px-4 py-2 flex items-center justify-between border-b border-gray-700 sticky top-0 z-10">
             <div className="flex items-center gap-2">
               {/* Project Name */}
               {sandboxData?.projectId && (
@@ -617,7 +798,7 @@ export default function Home() {
                     onClick={() => {
                       const projectId = sandboxData.projectId || searchParams.get('projectId')
                       if (projectId) {
-                        const newName = prompt('Rename project:', 'My Project')
+                        const newName = window.prompt('Rename project:', 'My Project')
                         if (newName && newName.trim()) {
                           handleRenameProject(projectId, newName.trim())
                         }
@@ -661,20 +842,77 @@ export default function Home() {
                 Code
               </button>
             </div>
-            {viewMode === 'preview' && (
-              <button
-                onClick={() => {
-                  const iframe = document.querySelector('iframe');
-                  if (iframe) iframe.src = iframe.src;
-                }}
-                className="text-gray-400 hover:text-gray-300 text-xs flex items-center gap-1"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Refresh
-              </button>
-            )}
+            <div className="flex items-center gap-4">
+              {/* Usage Indicator (only when logged in) */}
+              {user && <UsageIndicator />}
+
+              {/* User Menu or Sign In Button */}
+              {user ? (
+                <UserMenu />
+              ) : (
+                <button
+                  onClick={() => setShowAuthModal(true)}
+                  className="px-4 py-2 rounded-lg font-medium transition-all"
+                  style={{
+                    backgroundImage: 'url(/vibe_gradient.png)',
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center'
+                  }}
+                >
+                  <span className="text-white drop-shadow-lg">Sign In</span>
+                </button>
+              )}
+
+              {viewMode === 'preview' && (
+                <button
+                  onClick={() => {
+                    const iframe = document.querySelector('iframe');
+                    if (iframe) {
+                      // Add cache-busting parameter to force fresh load
+                      const url = new URL(iframe.src);
+                      url.searchParams.set('t', Date.now().toString());
+                      iframe.src = url.toString();
+                    }
+                  }}
+                  className="text-gray-400 hover:text-gray-300 text-xs flex items-center gap-1"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Refresh
+                </button>
+              )}
+
+              {/* Connect GitHub Button */}
+              {viewMode === 'preview' && sandboxData?.projectId && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const projectId = sandboxData.projectId || searchParams.get('projectId')
+                      if (!projectId) return
+                      const repoName = window.prompt('GitHub repo name (leave blank to auto-generate):', '') || ''
+                      const res = await fetch(`/api/projects/${projectId}/connect-github`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repoName })
+                      })
+                      const data = await res.json()
+                      if (!res.ok) throw new Error(data.error || 'GitHub connect failed')
+                      alert(`Connected! Repo: ${data.repoUrl}`)
+                    } catch (err) {
+                      alert((err as Error).message)
+                    }
+                  }}
+                  className="text-gray-400 hover:text-white text-xs flex items-center gap-2 border border-gray-700 px-2 py-1 rounded-md"
+                  title="Connect to GitHub"
+                >
+                  <svg viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4" aria-hidden="true">
+                    <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" clipRule="evenodd" />
+                  </svg>
+                  Connect
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Content */}
@@ -878,22 +1116,42 @@ export default function Home() {
                     </svg>
                     Copy
                   </button>
+                  <button
+                    onClick={handleSaveBuild}
+                    className="ml-2 text-white transition-colors text-xs flex items-center gap-1 px-3 py-1.5 rounded bg-purple-600 hover:bg-purple-700"
+                    title="Save changes and rebuild"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 11-6 0v-1m6-10V5a3 3 0 10-6 0v1" />
+                    </svg>
+                    Save & Build
+                  </button>
                 </div>
-                <div className="bg-gray-950 rounded-lg p-6 overflow-x-hidden">
-                  <pre className="text-sm font-mono leading-relaxed whitespace-pre-wrap break-words">
-                    <code className="text-gray-300">
-                      {sandboxData.files?.find(f => f.path === selectedFile)?.content.split('\n').map((line, i) => (
-                        <div key={i} className="table-row hover:bg-gray-900/50">
-                          <span className="table-cell text-right pr-4 text-gray-600 select-none" style={{minWidth: '3em'}}>
-                            {i + 1}
-                          </span>
-                          <span className="table-cell text-gray-300">
-                            {line || ' '}
-                          </span>
-                        </div>
-                      )) || '// File not found'}
-                    </code>
-                  </pre>
+                <div className="bg-gray-950 rounded-lg overflow-hidden border border-gray-800">
+                  {MonacoEditor ? (
+                    <MonacoEditor
+                      height="70vh"
+                      path={selectedFile}
+                      defaultLanguage={selectedFile.endsWith('.css') ? 'css' : selectedFile.endsWith('.ts') || selectedFile.endsWith('.tsx') ? 'typescript' : 'plaintext'}
+                      theme="vs-dark"
+                      value={editedFiles[selectedFile] ?? (sandboxData.files?.find(f => f.path === selectedFile)?.content || '')}
+                      keepCurrentModel
+                      options={editorOptions}
+                      onMount={(editor: any, monaco: any) => {
+                        try {
+                          // Disable TS/JS diagnostics entirely
+                          monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: true });
+                          monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: true });
+                          // Disable suggestions globally for TS/JS
+                          monaco.languages.typescript.typescriptDefaults.setCompilerOptions({ noLib: true });
+                          monaco.languages.typescript.javascriptDefaults.setCompilerOptions({ noLib: true });
+                        } catch {}
+                      }}
+                      onChange={(val: string | undefined) => setEditedFiles(prev => ({ ...prev, [selectedFile]: val || '' }))}
+                    />
+                  ) : (
+                    <div className="p-4 text-sm text-gray-400">Loading editor…</div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1090,9 +1348,9 @@ export default function Home() {
           <div className="space-y-8">
             {/* First row - scrolling left */}
             <div className="relative overflow-hidden">
-              <div className="flex space-x-8 animate-scroll-left">
+              <div className="flex space-x-2 animate-scroll-left">
                 {[1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6].map((num, index) => (
-                  <div key={`${num}-${index}`} className="flex-shrink-0 w-24 h-12 bg-gray-800/50 rounded-lg border border-gray-700 flex items-center justify-center hover:bg-gray-700/50 transition-colors">
+                  <div key={`${num}-${index}`} className="flex-shrink-0 w-32 h-12 md:w-48 md:h-16 flex items-center justify-center hover:bg-gray-700/50 transition-colors">
                     <img
                       src={`/slide/${num}.png`}
                       alt={`Integration ${num}`}
@@ -1108,9 +1366,9 @@ export default function Home() {
 
             {/* Second row - scrolling right */}
             <div className="relative overflow-hidden">
-              <div className="flex space-x-8 animate-scroll-right ml-12">
+              <div className="flex space-x-2 animate-scroll-right ml-12">
                 {[7, 8, 9, 10, 11, 12, 7, 8, 9, 10, 11, 12].map((num, index) => (
-                  <div key={`${num}-${index}`} className="flex-shrink-0 w-24 h-12 bg-gray-800/50 rounded-lg border border-gray-700 flex items-center justify-center hover:bg-gray-700/50 transition-colors">
+                  <div key={`${num}-${index}`} className="flex-shrink-0 w-32 h-12 md:w-48 md:h-16 flex items-center justify-center hover:bg-gray-700/50 transition-colors">
                     <img
                       src={`/slide/${num}.png`}
                       alt={`Integration ${num}`}
@@ -1314,7 +1572,7 @@ export default function Home() {
 
           <div className="border-t border-gray-800 pt-8 flex flex-col md:flex-row justify-between items-center">
             <p className="text-gray-400 text-sm">
-              © 2024 Vibe. All rights reserved.
+              © 2025 Vibe3. All rights reserved.
             </p>
             <div className="flex space-x-6 mt-4 md:mt-0">
               <a href="#" className="text-gray-400 hover:text-white transition-colors">

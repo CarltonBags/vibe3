@@ -59,11 +59,55 @@ export async function GET(
       )
     }
 
-    // Get project files
-    const { data: filesData, error: filesError } = await supabaseAdmin
-      .from('project_files')
-      .select('file_path, file_content')
-      .eq('project_id', projectId)
+    // Check for build targeting via query
+    const url = new URL(req.url)
+    const buildId = url.searchParams.get('buildId')
+    const buildVersionParam = url.searchParams.get('buildVersion')
+
+    let filesData: any[] | null = null
+    let filesError: any = null
+
+    if (buildId) {
+      const { data, error } = await supabaseAdmin
+        .from('project_files')
+        .select('file_path, file_content, created_at')
+        .eq('project_id', projectId)
+        .eq('build_id', buildId)
+        .order('file_path', { ascending: true })
+      filesData = data
+      filesError = error
+    } else if (buildVersionParam) {
+      // Resolve build by version
+      const version = parseInt(buildVersionParam, 10)
+      const { data: buildRow } = await supabaseAdmin
+        .from('builds')
+        .select('id')
+        .eq('project_id', projectId)
+        .eq('version', isNaN(version) ? -1 : version)
+        .maybeSingle()
+      if (buildRow) {
+        const { data, error } = await supabaseAdmin
+          .from('project_files')
+          .select('file_path, file_content, created_at')
+          .eq('project_id', projectId)
+          .eq('build_id', buildRow.id)
+          .order('file_path', { ascending: true })
+        filesData = data
+        filesError = error
+      }
+    }
+
+    // Default to latest by created_at per path if no build found/selected
+    if (!filesData) {
+      const { data, error } = await supabaseAdmin
+        .from('project_files')
+        .select('file_path, file_content, created_at')
+        .eq('project_id', projectId)
+        .order('file_path', { ascending: true })
+        .order('created_at', { ascending: false })
+      filesData = data
+      filesError = error
+    }
 
     if (filesError) {
       console.error('Error fetching files:', filesError)
@@ -73,11 +117,14 @@ export async function GET(
       )
     }
 
-    // Transform to match expected format
-    const files = filesData?.map(f => ({
-      path: f.file_path,
-      content: f.file_content
-    })) || []
+    // Deduplicate by file_path, keeping latest by created_at
+    const latestMap = new Map<string, { path: string; content: string }>()
+    for (const f of filesData || []) {
+      if (!latestMap.has(f.file_path)) {
+        latestMap.set(f.file_path, { path: f.file_path, content: f.file_content })
+      }
+    }
+    const files = Array.from(latestMap.values())
 
     return NextResponse.json({ files })
   } catch (error) {

@@ -13,6 +13,10 @@ const nextConfig = {
       },
     },
   },
+  // Reduce noisy request logging in dev
+  logging: {
+    level: 'error',
+  },
   // Webpack
   webpack: (config, { isServer }) => {
     if (!isServer) {

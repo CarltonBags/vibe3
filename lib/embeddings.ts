@@ -31,6 +31,16 @@ export function codeAwareChunks(filePath: string, content: string, maxChars = 16
   const isCSS = /\.(css|scss|sass)$/i.test(filePath)
   const isJSON = /\.json$/i.test(filePath)
   const isMD = /\.(md|mdx)$/i.test(filePath)
+  const isImage = /\.(png|jpg|jpeg|gif|svg|webp|ico)$/i.test(filePath)
+
+  // Image files: create semantic metadata chunk
+  if (isImage) {
+    const fileName = filePath.split('/').pop() || filePath
+    const fileType = fileName.split('.').pop()?.toUpperCase() || 'IMAGE'
+    // Create a rich metadata chunk that will be searchable
+    const metadata = `[IMAGE FILE] ${fileType} image file: ${fileName}\nLocated at: ${filePath}\nThis is an image asset used in the project, possibly as a logo, background, icon, or featured image.`
+    return [metadata]
+  }
 
   // Non-code files: paragraph/object based splits + fallback
   if (isMD) {

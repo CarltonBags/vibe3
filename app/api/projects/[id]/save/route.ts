@@ -47,51 +47,46 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
     if (!DAYTONA_KEY) {
       return NextResponse.json({ error: 'Missing DAYTONA_KEY' }, { status: 500 })
     }
-    const daytona = new Daytona({ token: DAYTONA_KEY })
-    const sandbox = await daytona.createSandbox({})
+    const daytona = new Daytona({ apiKey: DAYTONA_KEY, apiUrl: process.env.DAYTONA_URL || 'https://api.daytona.io' })
+    const sandbox = await daytona.create({
+      image: 'node:20-alpine',
+      public: true,
+      ephemeral: true,
+    })
 
     try {
       // Upload all files to sandbox (dedupe)
       const allFiles: FileContent[] = Array.from(pathToFile.values())
-      const uploadPromises: Promise<any>[] = []
       for (const f of allFiles) {
-        uploadPromises.push(sandbox.fs.writeFile({ path: f.path, content: f.content }))
+        const filePath = `/workspace/${f.path}`
+        await sandbox.fs.uploadFile(Buffer.from(f.content), filePath)
       }
-      await Promise.all(uploadPromises)
 
       // Install deps and build
-      const install = await sandbox.exec({ cmd: 'npm install', cwd: '.' })
-      if (install.exitCode !== 0) {
+      const installResult = await sandbox.process.executeCommand('cd /workspace && npm install')
+      if (installResult.exitCode !== 0) {
         throw new Error('Dependency install failed')
       }
 
-      const tsc = await sandbox.exec({ cmd: 'npx tsc --noEmit', cwd: '.' })
-      if (tsc.exitCode !== 0) {
+      const tscResult = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit')
+      if (tscResult.exitCode !== 0) {
         throw new Error('TypeScript check failed')
       }
 
-      const build = await sandbox.exec({ cmd: 'npm run build', cwd: '.' })
-      if (build.exitCode !== 0) {
+      const buildResult = await sandbox.process.executeCommand('cd /workspace && npm run build')
+      if (buildResult.exitCode !== 0) {
         throw new Error('Build failed')
       }
 
       // Collect dist files
-      const distList = await sandbox.fs.listDir({ path: 'dist' })
-      const distFiles: { path: string; content: string }[] = []
-      async function walk(base: string) {
-        const entries = await sandbox.fs.listDir({ path: base })
-        for (const e of entries) {
-          const p = `${base}/${e.name}`
-          if (e.type === 'file') {
-            const content = await sandbox.fs.readFile({ path: p })
-            distFiles.push({ path: p.replace(/^dist\//, ''), content })
-          } else if (e.type === 'dir') {
-            await walk(p)
-          }
-        }
+      const distListResult = await sandbox.process.executeCommand('cd /workspace && find dist -type f')
+      if (!distListResult.result) {
+        throw new Error('No dist files found')
       }
-      if (distList && distList.length) {
-        await walk('dist')
+      const distFiles: { path: string; content: Buffer }[] = []
+      for (const filePath of distListResult.result.trim().split('\n').filter(f => f)) {
+        const content = await sandbox.fs.downloadFile(`/workspace/${filePath}`)
+        distFiles.push({ path: filePath.replace(/^dist\//, ''), content: content as Buffer })
       }
 
       if (!distFiles.some(f => f.path === 'index.html')) {

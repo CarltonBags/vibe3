@@ -68,6 +68,7 @@ export class ViteHandler {
     await sandbox.fs.createFolder('/workspace/src/components', '755')
     await sandbox.fs.createFolder('/workspace/src/types', '755')
     await sandbox.fs.createFolder('/workspace/src/utils', '755')
+    await sandbox.fs.createFolder('/workspace/public', '755')
 
     // Upload template source files
     await sandbox.fs.uploadFile(

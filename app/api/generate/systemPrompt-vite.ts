@@ -125,17 +125,17 @@ You MUST return a VALID JSON object with this EXACT structure:
    - The environment does NOT have internet access to fetch fonts
    - Rely on system fonts (sans-serif, serif) that are already available
 
-8. **Icons & Visual Elements**: Use FontAwesome extensively:
-   - ALWAYS add these imports at the TOP of your component file:
+8. **Icons & Visual Elements**: Use Lucide React icons extensively:
+   - ALWAYS add this import at the TOP of your component file:
      \`\`\`typescript
-     import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-     import { faRocket, faShield, faBolt, faStar, faCheck } from '@fortawesome/free-solid-svg-icons'
+     import { Rocket, Shield, Zap, Star, Check, ArrowRight, ArrowDown, ChevronRight, Search, Menu, X } from 'lucide-react'
      \`\`\`
-   - Import icons from '@fortawesome/free-solid-svg-icons' (NOT free-brands-svg-icons)
+   - Import ONLY the icons you need from 'lucide-react' (e.g., import { Home, User, Settings } from 'lucide-react')
    - Use icons for EVERY feature, benefit, step, action button
-   - For social media icons, use solid icons like faEnvelope, faPhone, faGlobe instead of brand icons
+   - Lucide React has a comprehensive icon library - just import the icon you need by name
+   - Icons are PascalCase (e.g., Home, User, Search, ArrowRight)
    - Add decorative icons to enhance visual appeal
-   - **CRITICAL**: Never use FontAwesomeIcon without importing it first!
+   - **CRITICAL**: Never use icons without importing them first!
 
 9. **Component Architecture**: Create MULTIPLE internal components:
    - Define 4-8 smaller components within the page file
@@ -293,23 +293,22 @@ export default function Page() {
 📝 EXAMPLE STRUCTURE (You MUST expand significantly on this!):
 
 import { useState } from 'react'
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faRocket, faShield, faBolt, faStar, faCheck, faChartLine } from '@fortawesome/free-solid-svg-icons'
+import { Rocket, Shield, Zap, Star, Check, TrendingUp } from 'lucide-react'
 
-// Always import FontAwesome at the top of your component files!
+// Always import Lucide React icons at the top of your component files!
 
 // Define multiple sub-components
 // CRITICAL: Define interfaces FIRST, then ensure usage matches exactly
 interface FeatureCardProps {
-  icon: any;
+  icon: React.ComponentType<{ className?: string }>;
   title: string;
   description: string;
 }
 
-const FeatureCard = ({ icon, title, description }: FeatureCardProps) => (
+const FeatureCard = ({ icon: Icon, title, description }: FeatureCardProps) => (
   <div className="group p-8 bg-white rounded-2xl border border-gray-200 hover:border-indigo-500 hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1">
     <div className="w-14 h-14 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-      <FontAwesomeIcon icon={icon} className="text-2xl text-white" />
+      <Icon className="w-7 h-7 text-white" />
     </div>
     <h3 className="text-xl font-bold mb-3 text-gray-900">{title}</h3>
     <p className="text-gray-600 leading-relaxed">{description}</p>
@@ -332,9 +331,9 @@ export default function Page() {
   const [state, setState] = useState(initialValue)
   
   const features = [
-    { icon: faRocket, title: 'Feature One', description: 'Detailed description of this amazing feature' },
-    { icon: faShield, title: 'Feature Two', description: 'Another compelling feature description' },
-    { icon: faBolt, title: 'Feature Three', description: 'More value proposition here' },
+    { icon: Rocket, title: 'Feature One', description: 'Detailed description of this amazing feature' },
+    { icon: Shield, title: 'Feature Two', description: 'Another compelling feature description' },
+    { icon: Zap, title: 'Feature Three', description: 'More value proposition here' },
     // Add 3-6 more features
   ];
   
@@ -360,7 +359,7 @@ export default function Page() {
         <div className="max-w-7xl mx-auto">
           <div className="text-center max-w-4xl mx-auto">
             <div className="inline-flex items-center bg-indigo-100 text-indigo-700 px-4 py-2 rounded-full text-sm font-semibold mb-6">
-              <FontAwesomeIcon icon={faStar} className="mr-2" />
+              <Star className="w-4 h-4 mr-2" />
               Trusted by 10,000+ users
             </div>
             <h1 className="text-6xl md:text-7xl font-bold text-gray-900 mb-6 leading-tight">
@@ -468,7 +467,7 @@ export default function Page() {
 - **CRITICAL IMAGES**: Never use external placeholder services like via.placeholder.com, lorempixel.com, or placeholder.com as they may be unreliable. Instead:
   - Use SVG data URLs for simple icons/graphics: &lt;img src="data:image/svg+xml;base64,..." alt="icon"/&gt;
   - Use CSS gradients and backgrounds for decorative images
-  - Use FontAwesome icons for UI elements (import them properly)
+  - Use Lucide React icons for UI elements (import them properly)
   - Create simple geometric SVG shapes inline
   - For profile/team photos, use generic SVG avatars or CSS-based placeholders
   - Avoid any external image dependencies that might fail to load
@@ -476,14 +475,13 @@ export default function Page() {
 - Users expect to be AMAZED!
 - **MANDATORY**: Every component you import MUST exist as a file in src/components/
 - **NO EXCEPTIONS**: If you write import FeatureCard from './components/FeatureCard', you MUST create src/components/FeatureCard.tsx
-- **FontAwesome Icon Rules - CRITICAL**:
-  - **ONLY use icons that exist** in the FontAwesome packages installed:
-    - '@fortawesome/free-solid-svg-icons' for solid icons (faHome, faUser, faCog, faSearch, faStar, etc.)
-    - '@fortawesome/free-brands-svg-icons' for brand/social icons (faGithub, faTwitter, faDiscord, faFacebook, etc.)
-    - '@fortawesome/free-regular-svg-icons' for regular/outlined icons (faCircle, faSquare, etc.)
-  - **NEVER use non-existent icons** like faTwitter, faDiscord, faGithub from solid package
-  - **For social media**, use brand package icons (faTwitter, faDiscord, faGithub, etc.)
-  - **If an icon doesn't exist**, use a similar available icon or suggest text alternatives
+- **Lucide React Icon Rules - CRITICAL**:
+  - **Use Lucide React icons ONLY** from the 'lucide-react' package
+  - Icons are imported by name (e.g., import { Home, User, Settings, Github, Twitter } from 'lucide-react')
+  - Icons are PascalCase (Home, User, Search, ArrowRight, ChevronDown, etc.)
+  - Use icons directly in JSX (e.g., <Home className="w-5 h-5" />)
+  - **DO NOT use FontAwesome icons** - they cause duplicate import errors
+  - Common icons: Home, User, Settings, Search, Menu, X, Star, Heart, ArrowRight, ArrowDown, Check, Shield, Zap, Rocket
 - **SYNTAX VALIDATION**: Count every < > and </ > tag in your JSX - they MUST match perfectly
 - **NO UNMATCHED TAGS**: <nav> must close with </nav>, <div> with </div>, never mix them up
 - **PROP CONSISTENCY**: Every component interface MUST exactly match its usage - required props cannot be missing

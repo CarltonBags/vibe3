@@ -51,6 +51,8 @@ export default function Home() {
   const [currentSection, setCurrentSection] = useState<PageSection>('home')
   const [isDebugging, setIsDebugging] = useState(false)
   const [debugResults, setDebugResults] = useState<any>(null)
+  const [uploadedImages, setUploadedImages] = useState<string[]>([])
+  const [uploadedImageNames, setUploadedImageNames] = useState<string[]>([])
   const hasStartedRef = useRef(false)
   const editorOptions = useMemo(() => ({
     minimap: { enabled: false },
@@ -67,6 +69,38 @@ export default function Home() {
     autoClosingBrackets: 'never',
     autoClosingQuotes: 'never'
   }), [])
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files) return
+    
+    Array.from(files).forEach(file => {
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        alert(`${file.name} is not an image file`)
+        return
+      }
+      
+      // Validate file size (max 5MB per image)
+      if (file.size > 5 * 1024 * 1024) {
+        alert(`${file.name} is too large (max 5MB)`)
+        return
+      }
+      
+      const reader = new FileReader()
+      reader.onload = (event) => {
+        const result = event.target?.result as string
+        setUploadedImages(prev => [...prev, result])
+        setUploadedImageNames(prev => [...prev, file.name])
+      }
+      reader.readAsDataURL(file)
+    })
+  }
+
+  const removeImage = (index: number) => {
+    setUploadedImages(prev => prev.filter((_, i) => i !== index))
+    setUploadedImageNames(prev => prev.filter((_, i) => i !== index))
+  }
 
   const handleSaveBuild = async () => {
     try {
@@ -289,7 +323,11 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ prompt: prompt.trim() }),
+        body: JSON.stringify({ 
+          prompt: prompt.trim(),
+          images: uploadedImages,
+          imageNames: uploadedImageNames
+        }),
       })
 
       clearInterval(progressTimer)
@@ -353,6 +391,8 @@ export default function Home() {
     setProgress('')
     setError('')
     setAmendmentHistory([])
+    setUploadedImages([])
+    setUploadedImageNames([])
     hasStartedRef.current = false
     
     // Clear URL params if any
@@ -401,7 +441,9 @@ export default function Home() {
           amendmentPrompt: amendmentPrompt.trim(),
           sandboxId: sandboxId,
           projectId: projectId,
-          currentFiles: sandboxData.files
+          currentFiles: sandboxData.files,
+          images: uploadedImages,
+          imageNames: uploadedImageNames
         }),
       })
 
@@ -415,8 +457,10 @@ export default function Home() {
         // Add to history
         setAmendmentHistory(prev => [...prev, amendmentPrompt])
 
-        // Clear amendment input
+        // Clear amendment input and uploaded images
         setAmendmentPrompt('')
+        setUploadedImages([])
+        setUploadedImageNames([])
         setProgress(`✨ ${data.summary}`)
 
         // Update sandbox data with new files
@@ -609,33 +653,53 @@ export default function Home() {
                       onChange={(e) => setAmendmentPrompt(e.target.value)}
                       rows={3}
                       disabled={isAmending}
-                      className="w-full p-4 bg-transparent outline-none resize-none placeholder-gray-400 disabled:opacity-50"
+                      className="w-full p-4 pr-20 bg-transparent outline-none resize-none placeholder-gray-400 disabled:opacity-50"
                       placeholder="Request changes (e.g., 'Make the button bigger' or 'Add a contact form')..."
                     />
-                    <button
-                      type="submit"
-                      disabled={!amendmentPrompt.trim() || isAmending}
-                      className="submit-arrow disabled:opacity-50 disabled:cursor-not-allowed"
-                      aria-label="Apply Changes"
-                      style={{
-                        backgroundImage: 'url(/vibe_gradient.png)',
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center'
-                      }}
-                    >
-                      <svg 
-                        xmlns="http://www.w3.org/2000/svg" 
-                        viewBox="0 0 24 24" 
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="w-5 h-5"
+                    <div className="absolute bottom-3 right-3 flex items-center gap-2">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        onChange={handleImageUpload}
+                        disabled={isAmending}
+                        className="hidden"
+                        id="amendment-image-upload-input"
+                      />
+                      <label
+                        htmlFor="amendment-image-upload-input"
+                        className={`cursor-pointer transition-opacity ${isAmending ? 'opacity-30 cursor-not-allowed' : 'hover:opacity-70'}`}
+                        title={uploadedImages.length > 0 ? `${uploadedImages.length} image(s) uploaded` : 'Upload images'}
                       >
-                        <path d="M12 19V5M5 12l7-7 7 7" />
-                      </svg>
-                    </button>
+                        <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                      </label>
+                      {uploadedImages.length > 0 && (
+                        <span className="text-xs text-purple-400 font-medium">
+                          {uploadedImages.length}
+                        </span>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={!amendmentPrompt.trim() || isAmending}
+                        className="p-2 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:scale-110 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 shadow-lg"
+                        aria-label="Apply Changes"
+                      >
+                        <svg 
+                          xmlns="http://www.w3.org/2000/svg" 
+                          viewBox="0 0 24 24" 
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="w-4 h-4"
+                        >
+                          <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 </form>
 
@@ -1259,7 +1323,7 @@ export default function Home() {
           {/* Main Generation Form */}
           <div className="bg-gray-900/50 backdrop-blur-sm rounded-2xl p-8 border border-gray-800 max-w-2xl mx-auto">
             <form onSubmit={handleSubmit} className="space-y-6">
-              <div>
+              <div className="relative">
                 <label className="block text-sm font-medium text-gray-300 mb-3 text-left">
                   Describe what you want to build
                 </label>
@@ -1268,25 +1332,51 @@ export default function Home() {
                   onChange={(e) => setPrompt(e.target.value)}
                   rows={3}
                   disabled={isGenerating}
-                  className="w-full p-4 bg-gray-800/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 disabled:opacity-50 resize-none"
+                  className="w-full p-4 pr-10 bg-gray-800/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 disabled:opacity-50 resize-none"
                   placeholder="e.g., 'Create a modern portfolio website' or 'Build a Web3 NFT marketplace'"
                 />
+                {/* Image upload and Generate button in bottom right */}
+                <div className="absolute bottom-3 right-3 flex items-center gap-3">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleImageUpload}
+                    disabled={isGenerating}
+                    className="hidden"
+                    id="image-upload-input"
+                  />
+                  <label
+                    htmlFor="image-upload-input"
+                    className={`cursor-pointer transition-opacity ${isGenerating ? 'opacity-30 cursor-not-allowed' : 'hover:opacity-70'}`}
+                    title={uploadedImages.length > 0 ? `${uploadedImages.length} image(s) uploaded` : 'Upload images'}
+                  >
+                    <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                  </label>
+                  {uploadedImages.length > 0 && (
+                    <span className="text-xs text-purple-400 font-medium">
+                      {uploadedImages.length}
+                    </span>
+                  )}
+                  
+                  <button
+                    type="submit"
+                    disabled={!prompt.trim() || isGenerating}
+                    className="w-8 h-8 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:scale-110 transition-all duration-300 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100 flex items-center justify-center shadow-lg"
+                    title="Generate Application"
+                  >
+                    {isGenerating ? (
+                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
               </div>
-
-              <button
-                type="submit"
-                disabled={!prompt.trim() || isGenerating}
-                className="w-full py-4 px-6 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl hover:shadow-2xl hover:scale-105 transition-all duration-300 text-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isGenerating ? (
-                  <div className="flex items-center justify-center space-x-2">
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                    <span>Generating...</span>
-                  </div>
-                ) : (
-                  'Generate Application'
-                )}
-              </button>
             </form>
 
             {isGenerating && (

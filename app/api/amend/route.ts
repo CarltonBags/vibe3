@@ -24,7 +24,7 @@ export async function POST(req: Request) {
   let tokensUsed = 0;
 
   try {
-    const { amendmentPrompt, sandboxId, projectId, currentFiles } = await req.json();
+    const { amendmentPrompt, sandboxId, projectId, currentFiles, images = [], imageNames = [] } = await req.json();
 
     if (!amendmentPrompt || !sandboxId || !projectId) {
       return NextResponse.json(
@@ -252,8 +252,84 @@ Generate ONLY the files that need to change. Return JSON with files array and su
 
     // Prepare the full context with all files for Gemini
     const narrowedFiles: any[] = (global as any).__amendRelevantFiles || currentFiles
+    
+    // Build a comprehensive type reference document from all project files
+    const buildTypeReference = (files: any[]): string => {
+      const typeRef: string[] = [];
+      
+      for (const file of files) {
+        if (file.path.endsWith('.tsx') || file.path.endsWith('.ts')) {
+          const content = file.content || '';
+          const exports: string[] = [];
+          
+          // Extract all exports (more comprehensive pattern)
+          const allExportMatches = [
+            ...content.matchAll(/export\s+(?:default\s+)?(?:async\s+)?function\s+(\w+)/g),
+            ...content.matchAll(/export\s+(?:default\s+)?class\s+(\w+)/g),
+            ...content.matchAll(/export\s+(?:default\s+)?const\s+(\w+)/g),
+            ...content.matchAll(/export\s+(?:default\s+)?let\s+(\w+)/g),
+            ...content.matchAll(/export\s+(?:default\s+)?var\s+(\w+)/g),
+          ];
+          
+          for (const match of allExportMatches) {
+            if (match[1] && !exports.includes(match[1])) {
+              exports.push(match[1]);
+            }
+          }
+          
+          // Named exports from export { ... }
+          const namedExportMatch = content.match(/export\s*{\s*([^}]+)\s*}/);
+          if (namedExportMatch) {
+            const namedExports = namedExportMatch[1].split(',')
+              .map((e: string) => e.trim().split(' as ')[0].trim().split('}')[0].trim())
+              .filter(Boolean);
+            exports.push(...namedExports);
+          }
+          
+          // Extract interfaces (both exported and non-exported for context)
+          const allInterfaces: string[] = [];
+          const interfaceMatches = Array.from(content.matchAll(/interface\s+(\w+)([^{]*?)\{([\s\S]*?)\n\}/g));
+          for (const match of interfaceMatches) {
+            if (match && Array.isArray(match) && match[1] && match[3]) {
+              const props = String(match[3]).trim().split('\n').slice(0, 20).map((l: string) => l.trim()).filter(Boolean).join('\n  ');
+              allInterfaces.push(`interface ${match[1]} {\n  ${props}\n}`);
+            }
+          }
+          
+          // Extract type aliases
+          const allTypes: string[] = [];
+          const typeMatches = Array.from(content.matchAll(/type\s+(\w+)\s*=\s*([^;]+);/g));
+          for (const match of typeMatches) {
+            if (match && Array.isArray(match) && match[1] && match[2]) {
+              const typeValue = String(match[2]).trim().replace(/\s+/g, ' ').substring(0, 150);
+              allTypes.push(`type ${match[1]} = ${typeValue}`);
+            }
+          }
+          
+          // Only include files with meaningful exports or type definitions
+          if (exports.length > 0 || allInterfaces.length > 0 || allTypes.length > 0) {
+            typeRef.push(`\n--- ${file.path} ---`);
+            if (exports.length > 0) {
+              typeRef.push(`Exports: ${exports.join(', ')}`);
+            }
+            if (allInterfaces.length > 0) {
+              typeRef.push(`Interfaces:\n${allInterfaces.join('\n\n')}`);
+            }
+            if (allTypes.length > 0) {
+              typeRef.push(`Types:\n${allTypes.join('\n\n')}`);
+            }
+          }
+        }
+      }
+      
+      return typeRef.length > 0 ? `\n**TYPE REFERENCE** (exports, interfaces, types from ALL project files - USE THIS FOR TYPE COMPATIBILITY):\n${typeRef.join('\n')}\n` : '';
+    };
+    
+    const typeReference = buildTypeReference(currentFiles);
+    console.log(`[amend:${requestId}] type reference length=${typeReference.length}`)
+    
     const allComponentFiles = narrowedFiles.map((f: any) => {
-      if (f.path.startsWith('app/components/') || f.path === 'app/page.tsx' || f.path === 'description.md') {
+      if (f.path.startsWith('src/components/') || f.path.startsWith('app/components/') || f.path === 'app/page.tsx' || f.path === 'src/App.tsx' || f.path === 'description.md') {
         return `\nFile: ${f.path}\n\`\`\`\n${f.content}\n\`\`\``;
       }
       return '';
@@ -277,7 +353,9 @@ Generate ONLY the files that need to change. Return JSON with files array and su
       // ignore
     }
 
-    const fullContext = `${historyBlock}Current codebase has these files (subset relevant to the request):
+    const fullContext = `${historyBlock}${typeReference}
+
+Current codebase has these files (subset relevant to the request):
 ${narrowedFiles.map((f: any) => `- ${f.path}`).join('\n')}
 
 Here are ALL the component files in the project:
@@ -289,9 +367,42 @@ ${allComponentFiles}
 
 Please make ONLY the changes requested by the user. Read the files above to understand the current structure before making any modifications.`;
 
+    // Build multimodal content with images if provided
+    const contents: any[] = [{ text: fullContext }];
+    
+    if (images.length > 0) {
+      contents.push(...images.map((imgData: string, idx: number) => ({
+        inlineData: {
+          data: imgData.split(',')[1], // Remove data:image/...;base64, prefix
+          mimeType: imgData.split(';')[0].split(':')[1] // Extract MIME type
+        }
+      })));
+      
+      // Generate the actual file paths that will be created
+      const imageFileNames = images.map((imgData: string, idx: number) => {
+        const imgName = imageNames[idx] || `image-${idx + 1}`;
+        const mimeType = imgData.split(';')[0].split(':')[1];
+        const ext = mimeType === 'image/png' ? 'png' : 
+                   mimeType === 'image/jpeg' || mimeType === 'image/jpg' ? 'jpg' :
+                   mimeType === 'image/gif' ? 'gif' :
+                   mimeType === 'image/webp' ? 'webp' :
+                   mimeType === 'image/svg+xml' ? 'svg' : 'png';
+        const sanitizedName = imgName.replace(/[^a-zA-Z0-9.-]/g, '-').toLowerCase();
+        return sanitizedName.endsWith(`.${ext}`) ? sanitizedName : `${sanitizedName}.${ext}`;
+      });
+      
+      // In Vite, public folder files are served from root
+      const imagePaths = imageFileNames.map((name: string) => `/${name}`).join(', ');
+      
+      // Enhance the prompt with image context
+      contents[0] = { 
+        text: fullContext + `\n\nUSER PROVIDED IMAGES: User has uploaded ${images.length} image(s)${imageNames.length > 0 ? `: ${imageNames.join(', ')}` : ''}. These images will be accessible at: ${imagePaths}. Reference them using these exact paths (e.g., <img src="${imagePaths.split(',')[0]}" />). Please incorporate these images into the requested changes.`
+      };
+    }
+
     const completion = await gemini.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: [{text: fullContext}],
+      contents,
       config:{systemInstruction: instructions.toString()}
     });
 
@@ -480,7 +591,30 @@ export default function ${componentName}({}: Props) {
       );
     }
 
-    // Step 2: Apply changes to the existing Daytona sandbox
+    // Step 2: Get all project files from DB and merge with modifications
+    const { getProjectFiles } = await import('@/lib/db');
+    const allProjectFiles = await getProjectFiles(projectId);
+    
+    // Merge modified files into complete file set
+    const mergedFiles = new Map<string, { path: string; content: string }>();
+    
+    // Start with all existing files from DB
+    for (const file of allProjectFiles) {
+      mergedFiles.set(file.file_path, {
+        path: file.file_path,
+        content: file.file_content
+      });
+    }
+    
+    // Override with modified files from AI
+    for (const file of amendmentData.files) {
+      mergedFiles.set(file.path, file);
+    }
+    
+    const finalFiles = Array.from(mergedFiles.values());
+    console.log(`📦 Merged file set: ${finalFiles.length} files (${amendmentData.files.length} modified)`);
+
+    // Step 3: Apply changes to the existing Daytona sandbox
     const daytona = new Daytona({ 
       apiKey: process.env.DAYTONA_KEY || '',
       apiUrl: process.env.DAYTONA_URL || 'https://api.daytona.io'
@@ -489,15 +623,45 @@ export default function ${componentName}({}: Props) {
     const sandbox = await daytona.get(sandboxId);
 
     try {
-      // Upload modified files to sandbox
-      console.log(`Uploading ${amendmentData.files.length} modified files...`);
-      for (const file of amendmentData.files) {
+      // Upload user-provided images to public folder if any
+      if (images && images.length > 0) {
+        for (let i = 0; i < images.length; i++) {
+          const imgData = images[i];
+          const imgName = imageNames[i] || `image-${i + 1}`;
+          
+          // Extract base64 data and determine file extension
+          const base64Data = imgData.split(',')[1];
+          const mimeType = imgData.split(';')[0].split(':')[1];
+          const ext = mimeType === 'image/png' ? 'png' : 
+                     mimeType === 'image/jpeg' || mimeType === 'image/jpg' ? 'jpg' :
+                     mimeType === 'image/gif' ? 'gif' :
+                     mimeType === 'image/webp' ? 'webp' :
+                     mimeType === 'image/svg+xml' ? 'svg' : 'png';
+          
+          // Sanitize filename and create path
+          const sanitizedName = imgName.replace(/[^a-zA-Z0-9.-]/g, '-').toLowerCase();
+          const finalName = sanitizedName.endsWith(`.${ext}`) ? sanitizedName : `${sanitizedName}.${ext}`;
+          const publicPath = `/workspace/public/${finalName}`;
+          
+          // Convert base64 to buffer and upload
+          const imgBuffer = Buffer.from(base64Data, 'base64');
+          await sandbox.fs.uploadFile(imgBuffer, publicPath);
+          
+          console.log(`Uploaded amendment image: ${publicPath}`);
+        }
+      }
+
+      // Upload only modified/new files (sandbox should already have other files from reopen)
+      // But if sandbox is empty/fresh, upload everything
+      const filesForSandbox = amendmentData.files; // Only upload what changed
+      console.log(`📤 Uploading ${filesForSandbox.length} modified files to sandbox...`);
+      for (const file of filesForSandbox) {
         const filePath = `/workspace/${file.path}`;
         console.log(`Updating: ${filePath}`);
         
-        // Create directory if it's a new file in a new location
+        // Create directory if needed (safe to run even if exists)
         const dirPath = filePath.substring(0, filePath.lastIndexOf('/'));
-        if (dirPath !== '/workspace/app' && dirPath !== '/workspace') {
+        if (dirPath && dirPath !== '/workspace') {
           try {
             await sandbox.fs.createFolder(dirPath, '755');
           } catch (e) {
@@ -640,47 +804,464 @@ export default function ${componentName}({}: Props) {
 
       // Run preflight TypeScript check
       console.log('🔍 Running preflight TypeScript check...');
-      const tsCheckResult = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit 2>&1 || true');
-      const tsErrors = tsCheckResult.result || '';
+      let tsCheckResult = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit 2>&1 || true');
+      let tsErrors = tsCheckResult.result || '';
 
-      if (tsErrors.includes('error TS')) {
-        console.log('⚠️ TypeScript errors detected, attempting auto-fix...');
+      // Auto-fix loop: try up to 2 times
+      for (let attempt = 0; attempt < 2 && tsErrors.includes('error TS'); attempt++) {
+        console.log(`⚠️ TypeScript errors detected (attempt ${attempt + 1}/2), attempting auto-fix...`);
 
-        // Try to fix common issues
-        for (const file of amendmentData.files) {
-          if (file.path.endsWith('.tsx') || file.path.endsWith('.ts')) {
-            let content = file.content;
+        // Parse errors to find type mismatches
+        const errorLines = tsErrors.split('\n').filter(line => line.includes('error TS'));
+        const typeMismatches: { file: string; line: number; expected: string; actual: string }[] = [];
 
-            // If the file has issues, try to read the current content and fix it
-            try {
-              const currentContent = await sandbox.fs.downloadFile(`/workspace/${file.path}`);
-              content = currentContent.toString('utf-8');
+        const importExportErrors: { file: string; line: number; error: string }[] = [];
 
-              // Check for common issues and fix them
-              if (tsErrors.includes('FontAwesomeIcon') && content.includes('FontAwesomeIcon') && !content.includes('@fortawesome/react-fontawesome')) {
-                console.log(`🔧 Adding missing FontAwesome import to ${file.path}`);
-                const importLine = "import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';\n";
-                const firstImportIndex = content.indexOf("import ");
-                if (firstImportIndex !== -1) {
-                  content = content.slice(0, firstImportIndex) + importLine + content.slice(firstImportIndex);
-                } else {
-                  content = importLine + content;
+        for (const errorLine of errorLines) {
+          // Match pattern: "file(path,line): error TS2322: Type 'X' is not assignable to type 'Y'."
+          const match = errorLine.match(/([^(]+)\((\d+),\d+\):\s*error TS2322:\s*Type\s+['"](\w+)['"]\s+is not assignable to type\s+['"](\w+)['"]/);
+          if (match) {
+            const filePath = match[1].replace('/workspace/', '').trim();
+            const line = parseInt(match[2]);
+            const actual = match[3];
+            const expected = match[4];
+            
+            // Only track string vs number mismatches
+            if ((actual === 'string' && expected === 'number') || (actual === 'number' && expected === 'string')) {
+              typeMismatches.push({ file: filePath, line, expected, actual });
+            }
+          }
+
+          // Also match setter function type mismatches
+          // "Type 'Dispatch<SetStateAction<string>>' is not assignable to type '(amount: number) => void'"
+          const setterMatch = errorLine.match(/([^(]+)\((\d+),\d+\):\s*error TS2322:\s*Type\s+['"]Dispatch<SetStateAction<(\w+)>>['"]\s+is not assignable to type/);
+          if (setterMatch) {
+            const filePath = setterMatch[1].replace('/workspace/', '').trim();
+            const line = parseInt(setterMatch[2]);
+            const stateType = setterMatch[3];
+            
+            // Find the expected type from the error message
+            const expectedMatch = errorLine.match(/type\s+\((\w+):\s+(\w+)\)/);
+            if (expectedMatch && expectedMatch[2] !== stateType) {
+              typeMismatches.push({ 
+                file: filePath, 
+                line, 
+                expected: expectedMatch[2], 
+                actual: stateType 
+              });
+            }
+          }
+
+          // Match import/export errors: "Module has no exported member 'X'. Did you mean to use 'import X from'?"
+          const importError = errorLine.match(/([^(]+)\((\d+),\d+\):\s*error TS2614:\s*Module\s+.*has no exported member\s+['"](.+?)['"]/);
+          if (importError) {
+            const filePath = importError[1].replace('/workspace/', '').trim();
+            const line = parseInt(importError[2]);
+            const memberName = importError[3];
+            importExportErrors.push({ file: filePath, line, error: `named import ${memberName}` });
+          }
+
+          // Match default export errors: "Module has no default export"
+          const defaultExportError = errorLine.match(/([^(]+)\((\d+),\d+\):\s*error TS1192:\s*Module\s+.*has no default export/);
+          if (defaultExportError) {
+            const filePath = defaultExportError[1].replace('/workspace/', '').trim();
+            const line = parseInt(defaultExportError[2]);
+            importExportErrors.push({ file: filePath, line, error: 'default import' });
+          }
+        }
+
+        // Fix type mismatches in affected files
+        const fixedFiles = new Set<string>();
+        for (const mismatch of typeMismatches) {
+          if (fixedFiles.has(mismatch.file)) continue;
+
+          try {
+            const currentContent = await sandbox.fs.downloadFile(`/workspace/${mismatch.file}`);
+            let content = currentContent.toString('utf-8');
+            const lines = content.split('\n');
+
+            // Find useState calls that need type fixing
+            // Look for useState calls near the error line
+            const searchStart = Math.max(0, mismatch.line - 10);
+            const searchEnd = Math.min(lines.length, mismatch.line + 10);
+            
+            for (let i = searchStart; i < searchEnd; i++) {
+              // Fix useState type declarations
+              // Example: useState<string> -> useState<number>
+              if (mismatch.actual === 'string' && mismatch.expected === 'number') {
+                lines[i] = lines[i].replace(
+                  /useState<string>\(/g, 
+                  'useState<number>('
+                );
+                // Also fix initial values
+                lines[i] = lines[i].replace(
+                  /useState\(['"](\d+)['"]\)/g,
+                  'useState($1)' // Remove quotes from numeric strings
+                );
+                lines[i] = lines[i].replace(
+                  /useState\(['"](\d+\.\d+)['"]\)/g,
+                  'useState($1)'
+                );
+              } else if (mismatch.actual === 'number' && mismatch.expected === 'string') {
+                lines[i] = lines[i].replace(
+                  /useState<number>\(/g,
+                  'useState<string>('
+                );
+              }
+            }
+
+            content = lines.join('\n');
+            await sandbox.fs.uploadFile(Buffer.from(content), `/workspace/${mismatch.file}`);
+            fixedFiles.add(mismatch.file);
+            console.log(`🔧 Fixed type mismatch in ${mismatch.file} (line ${mismatch.line})`);
+          } catch (fixError) {
+            console.log(`⚠️ Could not auto-fix ${mismatch.file}:`, fixError);
+          }
+        }
+
+        // Fix import/export errors (named vs default imports)
+        for (const impError of importExportErrors) {
+          if (fixedFiles.has(impError.file)) continue;
+
+          try {
+            const currentContent = await sandbox.fs.downloadFile(`/workspace/${impError.file}`);
+            let content = currentContent.toString('utf-8');
+            const lines = content.split('\n');
+
+            // Fix the import line - convert named import to default import
+            if (impError.error.includes('named import')) {
+              const memberName = impError.error.match(/named import (\w+)/)?.[1];
+              if (memberName) {
+                // Find import line near the error line
+                const searchStart = Math.max(0, impError.line - 5);
+                const searchEnd = Math.min(lines.length, impError.line + 2);
+                
+                for (let i = searchStart; i < searchEnd; i++) {
+                  // Convert: import { SwapButton } from "./SwapButton"
+                  // To: import SwapButton from "./SwapButton"
+                  if (lines[i].includes(`import { ${memberName} }`)) {
+                    lines[i] = lines[i].replace(
+                      new RegExp(`import\\s+\\{\\s*${memberName}\\s*\\}`, 'g'),
+                      `import ${memberName}`
+                    );
+                    console.log(`🔧 Fixed named import to default import for ${memberName} in ${impError.file}`);
+                    break;
+                  }
                 }
-                await sandbox.fs.uploadFile(Buffer.from(content), `/workspace/${file.path}`);
+              }
+            }
+            
+            // Fix default import errors - convert to named import
+            if (impError.error === 'default import') {
+              // Find import line near the error line
+              const searchStart = Math.max(0, impError.line - 5);
+              const searchEnd = Math.min(lines.length, impError.line + 2);
+              
+              for (let i = searchStart; i < searchEnd; i++) {
+                // Look for: import SwapInterface from "..."
+                const defaultImportMatch = lines[i].match(/import\s+(\w+)\s+from\s+(['"][^'"]+['"])/);
+                if (defaultImportMatch) {
+                  const varName = defaultImportMatch[1];
+                  const modulePath = defaultImportMatch[2];
+                  // Convert: import SwapInterface from "./SwapInterface"
+                  // To: import { SwapInterface } from "./SwapInterface"
+                  lines[i] = lines[i].replace(
+                    new RegExp(`import\\s+${varName}\\s+from`, 'g'),
+                    `import { ${varName} } from`
+                  );
+                  console.log(`🔧 Fixed default import to named import for ${varName} in ${impError.file}`);
+                  break;
+                }
+              }
+            }
+
+            content = lines.join('\n');
+            await sandbox.fs.uploadFile(Buffer.from(content), `/workspace/${impError.file}`);
+            fixedFiles.add(impError.file);
+          } catch (fixError) {
+            console.log(`⚠️ Could not auto-fix import error in ${impError.file}:`, fixError);
+          }
+        }
+
+        // Re-run tsc check
+        tsCheckResult = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit 2>&1 || true');
+        tsErrors = tsCheckResult.result || '';
+
+        if (!tsErrors.includes('error TS')) {
+          console.log('✅ All TypeScript errors fixed automatically');
+          break;
+        }
+
+        // If still errors after auto-fix, try AI-assisted fix on all problematic files
+        if (tsErrors.includes('error TS')) {
+          // Get all unique files with errors
+          const errorFiles = new Set<string>();
+          const exportErrors: { file: string; missingExport: string; fromFile: string }[] = [];
+          
+          for (const errorLine of errorLines) {
+            const fileMatch = errorLine.match(/([^(]+)\(/);
+            if (fileMatch) {
+              const filePath = fileMatch[1]?.replace('/workspace/', '').trim();
+              if (filePath) errorFiles.add(filePath);
+            }
+            
+            // Detect missing export errors: "Module 'X' has no exported member 'Y'"
+            const exportMatch = errorLine.match(/([^(]+)\((\d+),\d+\):\s*error TS2305:\s*Module\s+['"](.+?)['"]\s+has no exported member\s+['"](.+?)['"]/);
+            if (exportMatch) {
+              const filePath = exportMatch[1]?.replace('/workspace/', '').trim();
+              const modulePath = exportMatch[3];
+              const missingExport = exportMatch[4];
+              if (filePath) {
+                exportErrors.push({ file: filePath, missingExport, fromFile: modulePath });
+              }
+            }
+          }
+
+          // Helper to resolve relative paths (used for finding related files)
+          const resolveImportPath = (importPath: string, fromFile: string): string[] => {
+            if (!importPath.startsWith('.')) return [];
+            
+            const fromDir = fromFile.substring(0, fromFile.lastIndexOf('/'));
+            let resolved = importPath;
+            
+            // Handle ../
+            while (resolved.startsWith('../')) {
+              const parentDir = fromDir.substring(0, fromDir.lastIndexOf('/'));
+              resolved = resolved.substring(3);
+              if (parentDir) {
+                resolved = parentDir + '/' + resolved;
+              } else {
+                resolved = resolved;
+              }
+            }
+            
+            // Handle ./
+            if (resolved.startsWith('./')) {
+              resolved = fromDir + '/' + resolved.substring(2);
+            }
+            
+            // Try with and without extensions
+            const paths = [];
+            if (!resolved.endsWith('.tsx') && !resolved.endsWith('.ts')) {
+              paths.push(`${resolved}.tsx`, `${resolved}.ts`);
+            } else {
+              paths.push(resolved);
+            }
+            
+            // Also try in src/ if not already there
+            if (!resolved.startsWith('src/')) {
+              paths.push(`src/${resolved}`, ...paths.map(p => p.startsWith('src/') ? p : `src/${p}`));
+            }
+            
+            return paths;
+          };
+
+          // Fix files one by one, starting with the most errors
+          const filesWithErrorCounts = Array.from(errorFiles).map(file => ({
+            file,
+            errorCount: errorLines.filter(l => l.includes(file)).length
+          })).sort((a, b) => b.errorCount - a.errorCount);
+
+          for (const { file: errorFile } of filesWithErrorCounts.slice(0, 3)) { // Fix up to 3 files
+            console.log(`🤖 Attempting AI-assisted fix for ${errorFile} (attempt ${attempt + 1})...`);
+            try {
+              const currentContent = await sandbox.fs.downloadFile(`/workspace/${errorFile}`);
+              const fileContent = currentContent.toString('utf-8');
+              
+              // Get ALL related files (imports, type definitions, hooks, contexts)
+              const importedModules: string[] = [];
+              const allImports = Array.from(fileContent.matchAll(/import\s+.*?\s+from\s+['"](.+?)['"]/g));
+              
+              for (const match of allImports) {
+                const importPath = match[1];
+                if (importPath.startsWith('.') || importPath.startsWith('/')) {
+                  const possiblePaths = resolveImportPath(importPath, errorFile);
+                  
+                  for (const path of possiblePaths) {
+                    try {
+                      const relatedContent = await sandbox.fs.downloadFile(`/workspace/${path}`).catch(() => null);
+                      if (relatedContent) {
+                        importedModules.push(`\n--- ${path} ---\n${relatedContent.toString('utf-8')}\n`);
+                        break;
+                      }
+                    } catch {}
+                  }
+                }
+              }
+              
+              // Also check for missing export errors - add the source file if needed
+              for (const expError of exportErrors) {
+                if (expError.file === errorFile) {
+                  // Try to find the source file that should export this
+                  const sourcePaths = resolveImportPath(expError.fromFile, errorFile);
+                  for (const path of sourcePaths) {
+                    try {
+                      const sourceContent = await sandbox.fs.downloadFile(`/workspace/${path}`).catch(() => null);
+                      if (sourceContent && !importedModules.some(m => m.includes(path))) {
+                        importedModules.push(`\n--- ${path} (needs to export '${expError.missingExport}') ---\n${sourceContent.toString('utf-8')}\n`);
+                        break;
+                      }
+                    } catch {}
+                  }
+                }
               }
 
-              // Re-check after fixes
-              const recheckResult = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit 2>&1 || true');
-              if (!recheckResult.result?.includes('error TS')) {
-                console.log('✅ TypeScript errors fixed');
+              // Get all errors for this specific file
+              const fileErrors = errorLines.filter(l => l.includes(errorFile)).slice(0, 15).join('\n');
+              
+              const relatedFilesContext = importedModules.length > 0 
+                ? `\n\n**CRITICAL CONTEXT - Type Definitions and Related Files**:\n${importedModules.join('\n')}\n`
+                : '';
+
+              // Check if there are missing export errors for this file
+              const missingExportsForFile = exportErrors.filter(e => e.file === errorFile);
+              const missingExportsNote = missingExportsForFile.length > 0
+                ? `\n\n**⚠️ MISSING EXPORTS DETECTED**:\n${missingExportsForFile.map(e => `- File tries to import '${e.missingExport}' from '${e.fromFile}' but it's not exported there. You may need to:\n  1. Fix the import to use what's actually exported\n  2. OR check the related file and ensure '${e.missingExport}' is exported\n`).join('\n')}`
+                : '';
+
+              const fixPrompt = `You are fixing TypeScript errors in a React/Vite project. 
+
+**CRITICAL RULES**:
+1. Match EXACT types - if a prop expects 'Token | null', pass 'Token | null', NOT 'string'
+2. If a property is missing (e.g., 'tokens'), ADD it to the type definition OR fix the usage
+3. If a function signature doesn't match, fix the function to match the expected signature
+4. Preserve ALL existing functionality - only fix type errors
+5. Use the exact type names from the related files shown below
+6. If importing a type that doesn't exist, either: (a) use the correct export name from the source file, or (b) if the source file shows it exists but isn't exported, you'll need to fix both files
+
+**TypeScript Errors to Fix**:
+${fileErrors}${missingExportsNote}
+
+**File to Fix**:
+\`\`\`typescript
+${fileContent}
+\`\`\`${relatedFilesContext}
+
+**Instructions**:
+- Fix ALL type errors shown above
+- If a type/export is missing: check related files to see what's actually exported, then either fix the import or add the export to the source file
+- Match the exact types from related files (Token vs string, number vs string, etc.)
+- Ensure all required properties exist on types
+- Fix function signatures to match expected types
+- Do NOT change functionality, only fix types and exports
+- Return ONLY the corrected TypeScript code, no markdown, no explanations
+
+**Return the complete fixed file code**`;
+
+              const fixResponse = await gemini.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: [{ text: fixPrompt }],
+                config: {
+                  temperature: 0.1,
+                  maxOutputTokens: 32000,
+                },
+              });
+
+              const fixedCode = fixResponse.text || '';
+              // Extract code from markdown if present
+              let codeToApply = '';
+              const codeMatch = fixedCode.match(/```(?:typescript|tsx|ts)?\n([\s\S]*?)\n```/);
+              if (codeMatch && codeMatch[1]) {
+                codeToApply = codeMatch[1];
               } else {
-                console.log('⚠️ Some TypeScript errors remain, proceeding with build anyway');
+                // Try to find code between markdown fences or just use the text
+                const lines = fixedCode.split('\n');
+                let inCodeBlock = false;
+                const codeLines: string[] = [];
+                for (const line of lines) {
+                  if (line.match(/^```/)) {
+                    inCodeBlock = !inCodeBlock;
+                    continue;
+                  }
+                  if (inCodeBlock || (!inCodeBlock && line.trim() && !line.startsWith('**'))) {
+                    codeLines.push(line);
+                  }
+                }
+                codeToApply = codeLines.join('\n') || fixedCode;
               }
-            } catch (fixError) {
-              console.log(`⚠️ Could not auto-fix ${file.path}:`, fixError);
+
+              if (codeToApply.trim().length > 100 && (codeToApply.includes('export') || codeToApply.includes('import'))) {
+                await sandbox.fs.uploadFile(Buffer.from(codeToApply), `/workspace/${errorFile}`);
+                console.log(`✅ AI-assisted fix applied to ${errorFile}`);
+                
+                // Re-check after each fix
+                tsCheckResult = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit 2>&1 || true');
+                tsErrors = tsCheckResult.result || '';
+                
+                // If no more errors, break early
+                if (!tsErrors.includes('error TS')) {
+                  console.log('✅ All errors fixed by AI!');
+                  break;
+                }
+                
+                // Update errorLines for next iteration
+                errorLines.length = 0;
+                errorLines.push(...tsErrors.split('\n').filter(l => l.includes('error TS')));
+                
+                // If there are still missing export errors for this file, also try to fix the source file
+                const remainingExportErrors = exportErrors.filter(e => e.file === errorFile && tsErrors.includes(`has no exported member '${e.missingExport}'`));
+                for (const expError of remainingExportErrors.slice(0, 1)) { // Fix first source file only
+                  const sourcePaths = resolveImportPath(expError.fromFile, errorFile);
+                  for (const sourcePath of sourcePaths) {
+                    try {
+                      const sourceContent = await sandbox.fs.downloadFile(`/workspace/${sourcePath}`).catch(() => null);
+                      if (sourceContent) {
+                        const sourceCode = sourceContent.toString('utf-8');
+                        // Check if the type/export exists but isn't exported
+                        const hasInterface = sourceCode.match(new RegExp(`\\binterface\\s+${expError.missingExport}\\b`));
+                        const hasType = sourceCode.match(new RegExp(`\\btype\\s+${expError.missingExport}\\b`));
+                        const hasClass = sourceCode.match(new RegExp(`\\bclass\\s+${expError.missingExport}\\b`));
+                        const hasConst = sourceCode.match(new RegExp(`\\bconst\\s+${expError.missingExport}\\b`));
+                        const hasFunction = sourceCode.match(new RegExp(`\\bfunction\\s+${expError.missingExport}\\b`));
+                        
+                        if (hasInterface || hasType || hasClass || hasConst || hasFunction) {
+                          console.log(`🔧 Fixing missing export in ${sourcePath}...`);
+                          // Add export if missing - check for non-exported declaration
+                          let fixedSource = sourceCode;
+                          const declarationMatch = fixedSource.match(new RegExp(`(interface|type|class|const|function)\\s+${expError.missingExport}\\b`));
+                          if (declarationMatch) {
+                            const keyword = declarationMatch[1];
+                            const needsExport = !fixedSource.match(new RegExp(`export\\s+${keyword}\\s+${expError.missingExport}\\b`));
+                            
+                            if (needsExport) {
+                              // Add export keyword before the declaration
+                              fixedSource = fixedSource.replace(
+                                new RegExp(`(${keyword})\\s+${expError.missingExport}`, 'g'),
+                                `export $1 ${expError.missingExport}`
+                              );
+                              await sandbox.fs.uploadFile(Buffer.from(fixedSource), `/workspace/${sourcePath}`);
+                              console.log(`✅ Added export for ${expError.missingExport} in ${sourcePath}`);
+                              
+                              // Re-check
+                              tsCheckResult = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit 2>&1 || true');
+                              tsErrors = tsCheckResult.result || '';
+                              if (!tsErrors.includes('error TS')) {
+                                console.log('✅ All errors fixed after export fix!');
+                                break;
+                              }
+                            }
+                          }
+                        }
+                        break;
+                      }
+                    } catch {}
+                  }
+                }
+              } else {
+                console.log(`⚠️ AI fix returned invalid code for ${errorFile}, skipping`);
+              }
+            } catch (aiError) {
+              console.log(`⚠️ AI fix failed for ${errorFile}:`, aiError);
             }
           }
         }
+      }
+
+      if (tsErrors.includes('error TS')) {
+        console.error('❌ TypeScript errors remain after auto-fix attempts:');
+        console.error(tsErrors.split('\n').filter(l => l.includes('error TS')).slice(0, 10).join('\n'));
+        console.error('🚫 NOT proceeding to build - code has unfixable TypeScript errors');
+        throw new Error('TypeScript compilation failed: ' + tsErrors.split('\n').filter(l => l.includes('error TS')).slice(0, 5).join('; '));
       }
 
       // Build Vite project for production (not Next.js anymore)
@@ -728,7 +1309,7 @@ export default function ${componentName}({}: Props) {
       const filesToUpload: Array<{ path: string; content: Buffer }> = [];
       for (const filePath of buildFiles) {
         try {
-          const content = await sandbox.fs.downloadFile(`/workspace/${filePath}`);
+          const content: Buffer = await sandbox.fs.downloadFile(`/workspace/${filePath}`) as Buffer;
           const relativePath = filePath.replace('dist/', '');
           filesToUpload.push({
             path: relativePath,
@@ -755,27 +1336,30 @@ export default function ${componentName}({}: Props) {
 
       // Verify the HTML content contains the changes
       const indexFile = filesToUpload.find(f => f.path === 'index.html');
-      if (indexFile) {
-        const htmlContent = indexFile.content.toString();
+      if (indexFile && Buffer.isBuffer(indexFile.content)) {
+        const htmlContent = indexFile.content.toString('utf-8');
         const hasRamelow = htmlContent.includes('Ramelow');
         const hasAreo = htmlContent.includes('Areo') || htmlContent.includes('areo');
         console.log(`🔍 HTML verification: Contains 'Ramelow': ${hasRamelow}, Contains 'Areo': ${hasAreo}`);
         console.log(`📄 HTML preview (first 200 chars):`, htmlContent.substring(0, 200));
+        
+        // Check for image references
+        const imageRefs = htmlContent.match(/<img[^>]*src=["'][^"']*["']/g);
+        if (imageRefs) {
+          console.log('🖼️  Image references in HTML:', imageRefs);
+        } else {
+          console.log('⚠️  No image references found in HTML - images may be in JS bundle');
+        }
       }
 
       // 🎯 CRITICAL: Only save to database if build succeeded
       console.log('💾 Saving successful build to database...');
 
-      // Merge modified files with existing files for database storage
-      const updatedFiles = [...currentFiles];
-      for (const modifiedFile of amendmentData.files) {
-        const existingIndex = updatedFiles.findIndex(f => f.path === modifiedFile.path);
-        if (existingIndex >= 0) {
-          updatedFiles[existingIndex] = modifiedFile;
-        } else {
-          updatedFiles.push(modifiedFile);
-        }
-      }
+      // Use the merged file set we created earlier (finalFiles)
+      const updatedFiles = finalFiles.map(f => ({
+        path: f.path,
+        content: f.content
+      }));
 
       // Update project in database with new files
       await saveProjectFiles(projectId, updatedFiles);

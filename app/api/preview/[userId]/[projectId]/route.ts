@@ -23,13 +23,14 @@ export async function GET(
       .download(storagePath);
 
     if (error || !data) {
-      console.error('Error downloading file:', error);
+      console.error(`Error downloading file from ${storagePath}:`, error);
       return NextResponse.json({ error: 'File not found' }, { status: 404 });
     }
 
     // Convert blob to buffer
     const arrayBuffer = await data.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    console.log(`Successfully downloaded file: ${storagePath} (${arrayBuffer.byteLength} bytes)`);
 
     // Determine content type
     const ext = path.split('.').pop()?.toLowerCase();
@@ -47,16 +48,94 @@ export async function GET(
       html = html.replace(/(href|src)="([^"]+)"/g, (match, attr, url) => {
         if (url.startsWith('./') || url.startsWith('/')) {
           const assetPath = url.startsWith('./') ? url.substring(2) : url.substring(1);
-          return `${attr}="${previewBase}${encodeURIComponent(assetPath)}${cacheBustParam}"`;
+          const rewritten = `${attr}="${previewBase}${encodeURIComponent(assetPath)}${cacheBustParam}"`;
+          return rewritten;
         }
         return match;
       });
+
+      // Inject image proxy wrapper BEFORE any scripts load
+      const proxyWrapper = `
+<script>
+(function() {
+  const base = '${previewBase}';
+  const cacheBust = '${cacheBustParam}';
+  
+  // Patch HTMLImageElement.prototype.src to intercept ALL image src assignments
+  const imgProto = HTMLImageElement.prototype;
+  const originalDesc = Object.getOwnPropertyDescriptor(imgProto, 'src');
+  if (originalDesc && originalDesc.set) {
+    Object.defineProperty(imgProto, 'src', {
+      get: originalDesc.get,
+      set: function(value) {
+        if (typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/api/')) {
+          const proxiedUrl = base + encodeURIComponent(value.substring(1)) + cacheBust;
+          return originalDesc.set.call(this, proxiedUrl);
+        }
+        return originalDesc.set.call(this, value);
+      },
+      configurable: true,
+      enumerable: true
+    });
+  }
+})();
+</script>
+`;
+      
+      // Inject before the first script tag
+      html = html.replace(/(<script[^>]*>)/i, proxyWrapper + '$1');
 
       return new NextResponse(html, {
         status: 200,
         headers: {
           'Content-Type': 'text/html',
           'Cache-Control': 'public, max-age=60', // Reduced to 1 minute for amendments
+        },
+      });
+    }
+
+    // For JavaScript files, rewrite asset URLs
+    if (contentType.includes('javascript')) {
+      const cacheBustParam = searchParams.get('t') ? `&t=${searchParams.get('t')}` : '';
+      const previewBase = `/api/preview/${userId}/${projectId}?path=`;
+      
+      let js = buffer.toString('utf-8');
+      
+      // Rewrite import.meta.env.BASE_URL if it exists
+      js = js.replace(/import\.meta\.env\.BASE_URL/g, '"/"');
+      
+      // Intercept HTMLImageElement.prototype.src to proxy all image requests
+      const proxyWrapper = `
+(function() {
+  const base = '${previewBase}';
+  const cacheBust = '${cacheBustParam}';
+  
+  // Patch HTMLImageElement.prototype.src to intercept ALL image src assignments
+  const imgProto = HTMLImageElement.prototype;
+  const originalDesc = Object.getOwnPropertyDescriptor(imgProto, 'src');
+  if (originalDesc && originalDesc.set) {
+    Object.defineProperty(imgProto, 'src', {
+      get: originalDesc.get,
+      set: function(value) {
+        if (typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/api/')) {
+          const proxiedUrl = base + encodeURIComponent(value.substring(1)) + cacheBust;
+          return originalDesc.set.call(this, proxiedUrl);
+        }
+        return originalDesc.set.call(this, value);
+      },
+      configurable: true,
+      enumerable: true
+    });
+  }
+})();
+`;
+      js = proxyWrapper + js;
+      
+      return new NextResponse(js, {
+        status: 200,
+        headers: {
+          'Content-Type': contentType,
+          'Cache-Control': 'public, max-age=3600',
         },
       });
     }
@@ -91,6 +170,7 @@ function getContentType(ext?: string): string {
     jpg: 'image/jpeg',
     jpeg: 'image/jpeg',
     gif: 'image/gif',
+    webp: 'image/webp',
     svg: 'image/svg+xml',
     ico: 'image/x-icon',
     woff: 'font/woff',

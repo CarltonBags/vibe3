@@ -44,7 +44,7 @@ export async function POST(req: Request) {
       );
     }
     
-    const { prompt, projectId: existingProjectId, template = 'vite-react' } = requestBody;
+    const { prompt, projectId: existingProjectId, template = 'vite-react', images = [], imageNames = [] } = requestBody;
 
     if (!prompt) {
       return NextResponse.json(
@@ -265,16 +265,53 @@ export async function POST(req: Request) {
     let safety = 6; // at most 6 batches
     console.log(`[generate:${requestId}] plan snippet:`, (planRaw || '').slice(0, 400))
     while (collected.length < maxFilesTotal && safety-- > 0) {
+      const isFirstBatch = collected.length === 0;
       const want = remaining.length > 0 ? remaining.slice(0, batchSize) : [];
       const fileMapSummary = collected.slice(0, 50).map(f => ({ path: f.path, size: f.content.length })).slice(0, 50);
       const genPrompt = `Generate a batch of files for this project. Return ONLY JSON with {"files":[{"path":"...","content":"..."}],"summary":"..."}. Max ${Math.min(batchSize, maxFilesTotal - collected.length)} files this batch. Ensure TS+JSX correctness, matched tags, and existing imports. Avoid external placeholder images.\n\nPROJECT PLAN:\n${planRaw}\n\nALREADY GENERATED (for context):\n${JSON.stringify(fileMapSummary)}\n\nDESIRED PATHS FOR THIS BATCH (hints, optional):\n${JSON.stringify(want)}`;
 
-      const tryModel = async (model: string) =>
-        gemini.models.generateContent({
+      const tryModel = async (model: string) => {
+        const contents: any[] = [{ text: genPrompt }];
+        
+        // Include images in all batches so AI can reference them
+        if (images.length > 0) {
+          contents.push(...images.map((imgData: string, idx: number) => ({
+            inlineData: {
+              data: imgData.split(',')[1], // Remove data:image/...;base64, prefix
+              mimeType: imgData.split(';')[0].split(':')[1] // Extract MIME type
+            }
+          })));
+          
+          // Enhance the prompt with image context and paths
+          // Generate the actual file paths that will be created
+          const imageFileNames = images.map((imgData: string, idx: number) => {
+            const imgName = imageNames[idx] || `image-${idx + 1}`;
+            const mimeType = imgData.split(';')[0].split(':')[1];
+            const ext = mimeType === 'image/png' ? 'png' : 
+                       mimeType === 'image/jpeg' || mimeType === 'image/jpg' ? 'jpg' :
+                       mimeType === 'image/gif' ? 'gif' :
+                       mimeType === 'image/webp' ? 'webp' :
+                       mimeType === 'image/svg+xml' ? 'svg' : 'png';
+            const sanitizedName = imgName.replace(/[^a-zA-Z0-9.-]/g, '-').toLowerCase();
+            return sanitizedName.endsWith(`.${ext}`) ? sanitizedName : `${sanitizedName}.${ext}`;
+          });
+          
+          // In Vite, public folder files are served from root, so /filename.png not /public/filename.png
+          const imagePaths = imageFileNames.map((name: string) => `/${name}`).join(', ');
+          
+          console.log(`🎨 Image paths for AI: ${imagePaths}`);
+          
+          contents[0] = { 
+            text: genPrompt + `\n\nUSER PROVIDED IMAGES: User has uploaded ${images.length} image(s)${imageNames.length > 0 ? `: ${imageNames.join(', ')}` : ''}. These images are saved in the public folder and will be accessible at: ${imagePaths}. IMPORTANT: Reference them in your code using these exact paths. For example: <img src="${imagePaths.split(',')[0]}" alt="Logo" />. Please incorporate these images into the generated UI. Use them as logos, backgrounds, or featured imagery as appropriate.`
+          };
+        }
+        
+        return gemini.models.generateContent({
           model,
-          contents: [{ text: genPrompt }],
+          contents,
           config: { systemInstruction: instruction.toString(), responseMimeType: 'application/json' as any, temperature: 0.3 }
         });
+      };
 
       let genText = '';
       try {
@@ -465,6 +502,36 @@ All files must be TypeScript/TSX where applicable. Ensure they integrate with sr
       await sandbox.fs.uploadFile(Buffer.from(appTsx), '/workspace/src/App.tsx');
       await sandbox.fs.uploadFile(Buffer.from(indexCss), '/workspace/src/index.css');
       
+      // Upload user-provided images to public folder
+      if (images && images.length > 0) {
+        for (let i = 0; i < images.length; i++) {
+          const imgData = images[i];
+          const imgName = imageNames[i] || `image-${i + 1}`;
+          
+          // Extract base64 data and determine file extension
+          const base64Data = imgData.split(',')[1];
+          const mimeType = imgData.split(';')[0].split(':')[1];
+          const ext = mimeType === 'image/png' ? 'png' : 
+                     mimeType === 'image/jpeg' || mimeType === 'image/jpg' ? 'jpg' :
+                     mimeType === 'image/gif' ? 'gif' :
+                     mimeType === 'image/webp' ? 'webp' :
+                     mimeType === 'image/svg+xml' ? 'svg' : 'png';
+          
+          // Sanitize filename and create path
+          const sanitizedName = imgName.replace(/[^a-zA-Z0-9.-]/g, '-').toLowerCase();
+          const finalName = sanitizedName.endsWith(`.${ext}`) ? sanitizedName : `${sanitizedName}.${ext}`;
+          const publicPath = `/workspace/public/${finalName}`;
+          
+          console.log(`📤 Uploading image: ${imgName} -> ${finalName} to ${publicPath}`);
+          
+          // Convert base64 to buffer and upload
+          const imgBuffer = Buffer.from(base64Data, 'base64');
+          await sandbox.fs.uploadFile(imgBuffer, publicPath);
+          
+          console.log(`✅ Uploaded user image: ${publicPath} (${imgBuffer.length} bytes)`);
+        }
+      }
+      
       // Upload all generated files (with validation)
       for (const file of filesData.files) {
         // Map app/ paths to src/ for Vite
@@ -483,82 +550,7 @@ All files must be TypeScript/TSX where applicable. Ensure they integrate with sr
           } catch {}
         }
         
-          // CRITICAL: Add FontAwesome imports if icons are used but imports are missing
-        if (content.includes('FontAwesomeIcon') || content.includes('fa')) {
-          // Add FontAwesomeIcon import
-          if (!content.includes('@fortawesome/react-fontawesome')) {
-            const importLine = "import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';\n";
-            const firstImportIndex = content.indexOf("import ");
-            if (firstImportIndex !== -1) {
-              content = content.slice(0, firstImportIndex) + importLine + content.slice(firstImportIndex);
-            } else {
-              content = importLine + content;
-            }
-          }
-
-          // Extract fa icon names from the content
-          const faIconMatches = content.match(/fa[A-Z]\w+/g) || [];
-          if (faIconMatches.length > 0) {
-            const uniqueIcons = Array.from(new Set(faIconMatches));
-
-            // Categorize icons by package
-            const solidIcons = [];
-            const brandIcons = [];
-            const regularIcons = [];
-
-            for (const icon of uniqueIcons) {
-              // Social media and brand icons go to brands package
-              if (icon.includes('Twitter') || icon.includes('Discord') || icon.includes('Github') ||
-                  icon.includes('Facebook') || icon.includes('Instagram') || icon.includes('Linkedin') ||
-                  icon.includes('Youtube') || icon.includes('Gitlab') || icon.includes('Slack') ||
-                  icon.includes('Telegram') || icon.includes('Whatsapp')) {
-                brandIcons.push(icon);
-              }
-              // Regular icons (circle, square, etc.) go to regular package
-              else if (icon.includes('Circle') || icon.includes('Square') || icon.includes('Rectangle') ||
-                       icon.includes('Triangle') || icon.includes('Diamond') || icon.includes('Hexagon')) {
-                regularIcons.push(icon);
-              }
-              // Everything else goes to solid (default)
-              else {
-                solidIcons.push(icon);
-              }
-            }
-
-            // Add solid icons import
-            if (solidIcons.length > 0 && !content.includes('@fortawesome/free-solid-svg-icons')) {
-              const iconImportLine = `import { ${solidIcons.join(', ')} } from '@fortawesome/free-solid-svg-icons';\n`;
-              const firstImportIndex = content.indexOf("import ");
-              if (firstImportIndex !== -1) {
-                content = content.slice(0, firstImportIndex) + iconImportLine + content.slice(firstImportIndex);
-              } else {
-                content = iconImportLine + content;
-              }
-            }
-
-            // Add brand icons import
-            if (brandIcons.length > 0 && !content.includes('@fortawesome/free-brands-svg-icons')) {
-              const iconImportLine = `import { ${brandIcons.join(', ')} } from '@fortawesome/free-brands-svg-icons';\n`;
-              const firstImportIndex = content.indexOf("import ");
-              if (firstImportIndex !== -1) {
-                content = content.slice(0, firstImportIndex) + iconImportLine + content.slice(firstImportIndex);
-              } else {
-                content = iconImportLine + content;
-              }
-            }
-
-            // Add regular icons import
-            if (regularIcons.length > 0 && !content.includes('@fortawesome/free-regular-svg-icons')) {
-              const iconImportLine = `import { ${regularIcons.join(', ')} } from '@fortawesome/free-regular-svg-icons';\n`;
-              const firstImportIndex = content.indexOf("import ");
-              if (firstImportIndex !== -1) {
-                content = content.slice(0, firstImportIndex) + iconImportLine + content.slice(firstImportIndex);
-              } else {
-                content = iconImportLine + content;
-              }
-            }
-          }
-        }
+          // NOTE: Using Lucide React icons instead of FontAwesome to avoid duplicate import errors
         
         // CRITICAL: Final validation before upload - check if content is still JSON
         if (content.trim().startsWith('{') && (content.includes('"files"') || content.includes('"path"'))) {
@@ -952,10 +944,54 @@ export default function ${componentName}({}: Props) {
             let fixed = code
             // Remove markdown fences if any
             fixed = fixed.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '')
-            // Ensure single root wrapper in return
+            
+            // Fix duplicate identifier errors (duplicate imports)
+            if (tsText.includes('Duplicate identifier')) {
+              // Find all import statements
+              const importLines = fixed.split('\n').filter(line => /^import\s+/.test(line.trim()));
+              const seenImports = new Set<string>();
+              const uniqueImports: string[] = [];
+              
+              for (const line of importLines) {
+                const stripped = line.trim();
+                if (!seenImports.has(stripped)) {
+                  seenImports.add(stripped);
+                  uniqueImports.push(line);
+                }
+              }
+              
+              // Remove all imports and re-add unique ones
+              if (uniqueImports.length !== importLines.length) {
+                const lines = fixed.split('\n');
+                let firstImportIndex = -1;
+                let lastImportIndex = -1;
+                
+                for (let i = 0; i < lines.length; i++) {
+                  if (/^import\s+/.test(lines[i].trim())) {
+                    if (firstImportIndex === -1) firstImportIndex = i;
+                    lastImportIndex = i;
+                  }
+                }
+                
+                if (firstImportIndex !== -1 && lastImportIndex !== -1) {
+                  fixed = [
+                    ...lines.slice(0, firstImportIndex),
+                    ...uniqueImports,
+                    ...lines.slice(lastImportIndex + 1)
+                  ].join('\n');
+                  console.log(`Removed ${importLines.length - uniqueImports.length} duplicate imports from ${rel}`);
+                }
+              }
+            }
+            
+            // Ensure single root wrapper in return (only if multiple root elements detected)
             fixed = fixed.replace(/return\s*\(([\s\S]*?)\);?/m, (m, inner) => {
               const trimmed = String(inner).trim()
-              if (!/^<([A-Za-z]|>|React\.)/.test(trimmed) || /^<>([\s\S]*)<\/?>$/.test(trimmed) || /^<div[\s\S]*<\/div>$/.test(trimmed)) return m
+              // Skip if already has single root or is React fragment
+              if (/^<([A-Za-z]|>|React\.)/.test(trimmed) && (/^<[A-Za-z][\s\S]*<\/[A-Za-z]>/.test(trimmed) || /^<>[\s\S]*<\/>$/.test(trimmed))) return m
+              // Only wrap if truly multiple roots or invalid structure
+              const rootMatches = trimmed.match(/^</g)
+              if (!rootMatches || rootMatches.length <= 1) return m
               return `return (\n  <div>\n${inner}\n  </div>\n)`
             })
             // Close common tags if unbalanced
@@ -992,9 +1028,14 @@ export default function ${componentName}({}: Props) {
               max_tokens: 4000
             })
             const fixed = (aiFix.choices[0]?.message?.content || '').replace(/```[a-zA-Z]*\n?/g,'').replace(/```/g,'').trim()
-            if (fixed && fixed.length > 50) {
+            // Validate the fixed code looks reasonable before applying
+            if (fixed && fixed.length > 50 && fixed.length < src.length * 3 && (
+              fixed.includes('export') || fixed.includes('import') || fixed.includes('function') || fixed.includes('const')
+            )) {
               await sandbox.fs.uploadFile(Buffer.from(fixed), abs)
               console.log('Applied AI fix to', rel)
+            } else {
+              console.log('⚠️ AI fix rejected: invalid code structure')
             }
           } catch (e) {
             console.error('AI fix failed:', e)

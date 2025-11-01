@@ -30,7 +30,6 @@ export async function GET(
     // Convert blob to buffer
     const arrayBuffer = await data.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    console.log(`Successfully downloaded file: ${storagePath} (${arrayBuffer.byteLength} bytes)`);
 
     // Determine content type
     const ext = path.split('.').pop()?.toLowerCase();

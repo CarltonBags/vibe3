@@ -195,7 +195,7 @@ export async function POST(req: Request) {
         if (match) cleaned = match[0];
         cleaned = cleaned.replace(/,(\s*[}\]])/g, '$1');
         filesPayload = JSON.parse(cleaned);
-      } catch (e) {
+          } catch (e) {
         filesPayload = null;
       }
       return filesPayload;
@@ -231,7 +231,7 @@ export async function POST(req: Request) {
         const payload = parseFilesJson(out.text || '');
         if (payload && payload.files && payload.files[0] && payload.files[0].path === targetPath) {
           const file = payload.files[0];
-          return {
+        return {
             path: file.path,
             content: (file.content || '')
               .replace(/\\n/g, '\n')
@@ -497,10 +497,16 @@ All files must be TypeScript/TSX where applicable. Ensure they integrate with sr
       // Start installing dependencies in parallel with file uploads
       const installPromise = sandbox.process.executeCommand('cd /workspace && npm install');
       
-      // Write app files
-      await sandbox.fs.uploadFile(Buffer.from(mainTsx), '/workspace/src/main.tsx');
-      await sandbox.fs.uploadFile(Buffer.from(appTsx), '/workspace/src/App.tsx');
-      await sandbox.fs.uploadFile(Buffer.from(indexCss), '/workspace/src/index.css');
+      // Check if AI generated these core files BEFORE uploading templates
+      const aiGeneratedPaths = filesData.files.map(f => f.path.replace('app/', 'src/'));
+      const hasAppTsx = aiGeneratedPaths.includes('src/App.tsx');
+      const hasMainTsx = aiGeneratedPaths.includes('src/main.tsx');
+      const hasIndexCss = aiGeneratedPaths.includes('src/index.css');
+      
+      // Only upload template files if AI didn't generate them
+      if (!hasMainTsx) await sandbox.fs.uploadFile(Buffer.from(mainTsx), '/workspace/src/main.tsx');
+      if (!hasAppTsx) await sandbox.fs.uploadFile(Buffer.from(appTsx), '/workspace/src/App.tsx');
+      if (!hasIndexCss) await sandbox.fs.uploadFile(Buffer.from(indexCss), '/workspace/src/index.css');
       
       // Upload user-provided images to public folder
       if (images && images.length > 0) {
@@ -615,8 +621,9 @@ All files must be TypeScript/TSX where applicable. Ensure they integrate with sr
         const hasJsonError = tsErrors.includes('"files"') || tsErrors.includes('Expected');
         const hasJsxError = tsErrors.includes('closing tag') || tsErrors.includes('Expected corresponding JSX') || tsErrors.includes('jsx identifier');
         const hasStringLiteralError = tsErrors.includes('TS1002') || tsErrors.includes('Unterminated string literal');
+        const hasPropError = tsErrors.includes('is missing') || tsErrors.includes('does not exist in type') || tsErrors.includes('Property') || tsErrors.includes('is not assignable to');
         
-        if (!hasTsErrors && !hasSyntaxErrors && !hasMissingImports && !hasJsonError && !hasJsxError && !hasStringLiteralError) {
+        if (!hasTsErrors && !hasSyntaxErrors && !hasMissingImports && !hasJsonError && !hasJsxError && !hasStringLiteralError && !hasPropError) {
           hasErrors = false;
           break;
         }
@@ -625,14 +632,22 @@ All files must be TypeScript/TSX where applicable. Ensure they integrate with sr
           break;
         }
         
-        // Check which file has the JSX error from the preflight output
+        // Check which files have errors from the preflight output
         // Match patterns like: src/components/Header.tsx(19,6): or src/App.tsx
-        const errorFileMatch = tsErrors.match(/(?:^|\n)(src\/[^\s(]+\.tsx)/m);
-        if (!errorFileMatch || !errorFileMatch[1]) {
+        const errorFileMatches = Array.from(tsErrors.matchAll(/(?:^|\n)(src\/[^\s(]+\.tsx)/g));
+        if (errorFileMatches.length === 0) {
           break;
         }
         
-        const filePath = `/workspace/${errorFileMatch[1]}`;
+        // Get unique file paths
+        const errorFiles = Array.from(new Set(errorFileMatches.map(m => m[1])));
+        console.log(`🔧 Files with errors: ${errorFiles.join(', ')}`);
+        
+        let anyFileFixed = false;
+        
+        // Fix each file with errors
+        for (const errorFile of errorFiles) {
+          const filePath = `/workspace/${errorFile}`;
         
         // Check if file exists before trying to download
         let pageText = '';
@@ -641,7 +656,7 @@ All files must be TypeScript/TSX where applicable. Ensure they integrate with sr
           pageText = pageContent.toString('utf-8');
         } catch (fileError) {
           console.error(`Could not read file ${filePath}:`, fileError);
-          break;
+            continue;
         }
         
         // Common fixes
@@ -685,100 +700,100 @@ All files must be TypeScript/TSX where applicable. Ensure they integrate with sr
         
         // Note: Vite doesn't need 'use client' directive
         
-        // Fix 3: If string literal errors detected, try to fix them
-        if (hasStringLiteralError && !needsFix) {
-          try {
-            // Find lines with unterminated strings by looking for odd number of quotes
-            const lines = fixedContent.split('\n');
-            let fixedLines = [...lines];
-            let hasFixes = false;
+          // Fix 3: If string literal errors detected, try to fix them
+          if (hasStringLiteralError && !needsFix) {
+            try {
+              // Find lines with unterminated strings by looking for odd number of quotes
+              const lines = fixedContent.split('\n');
+              let fixedLines = [...lines];
+              let hasFixes = false;
 
-            for (let i = 0; i < lines.length; i++) {
-              const line = lines[i];
-              const singleQuotes = (line.match(/'/g) || []).length;
-              const doubleQuotes = (line.match(/"/g) || []).length;
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const singleQuotes = (line.match(/'/g) || []).length;
+                const doubleQuotes = (line.match(/"/g) || []).length;
 
-              // If we have odd number of quotes, likely unterminated string
-              if (singleQuotes % 2 !== 0 || doubleQuotes % 2 !== 0) {
-                // Try to fix by escaping quotes or adding closing quotes
-                let fixedLine = line;
+                // If we have odd number of quotes, likely unterminated string
+                if (singleQuotes % 2 !== 0 || doubleQuotes % 2 !== 0) {
+                  // Try to fix by escaping quotes or adding closing quotes
+                  let fixedLine = line;
 
-                // Replace unescaped quotes with escaped ones (simple approach)
-                fixedLine = fixedLine.replace(/([^\\])'/g, '$1\\\'');
-                fixedLine = fixedLine.replace(/([^\\])"/g, '$1\\"');
+                  // Replace unescaped quotes with escaped ones (simple approach)
+                  fixedLine = fixedLine.replace(/([^\\])'/g, '$1\\\'');
+                  fixedLine = fixedLine.replace(/([^\\])"/g, '$1\\"');
 
-                // If the line ends with an operator or comma, it might need a closing quote
-                if (fixedLine.trim().match(/[+\-*/,;]$/) && !fixedLine.trim().endsWith("'") && !fixedLine.trim().endsWith('"')) {
-                  // Add a closing quote (prefer double quotes for JSX)
-                  fixedLine += '"';
+                  // If the line ends with an operator or comma, it might need a closing quote
+                  if (fixedLine.trim().match(/[+\-*/,;]$/) && !fixedLine.trim().endsWith("'") && !fixedLine.trim().endsWith('"')) {
+                    // Add a closing quote (prefer double quotes for JSX)
+                    fixedLine += '"';
+                  }
+
+                  if (fixedLine !== line) {
+                    fixedLines[i] = fixedLine;
+                    hasFixes = true;
+                  }
                 }
+              }
 
-                if (fixedLine !== line) {
-                  fixedLines[i] = fixedLine;
-                  hasFixes = true;
+              if (hasFixes) {
+                fixedContent = fixedLines.join('\n');
+                needsFix = true;
+              }
+            } catch (fixError) {
+              console.error('String literal fix failed:', fixError);
+            }
+          }
+
+          // Fix 4: Manual JSX fixes first
+        if (hasJsxError && !needsFix) {
+            let manualFixed = pageText;
+
+            // Fix 1: Add parent wrapper if multiple root elements
+            if (tsErrors.includes('JSX expressions must have one parent element')) {
+              // Look for return statement with multiple JSX elements
+              const returnMatch = manualFixed.match(/return\s*\(\s*([\s\S]*?)\s*\)/);
+              if (returnMatch) {
+                const returnContent = returnMatch[1];
+                // Check if it starts with < and has multiple top-level elements
+                if (returnContent.includes('<') && !returnContent.trim().startsWith('<>') && !returnContent.trim().startsWith('<div') && !returnContent.trim().startsWith('<React.Fragment')) {
+                  // Count top-level JSX elements
+                  const topLevelJsx = returnContent.match(/<[^/][^>]*>/g) || [];
+                  if (topLevelJsx.length > 1) {
+                    manualFixed = manualFixed.replace(
+                      /return\s*\(\s*([\s\S]*?)\s*\)/,
+                      'return (\n    <div>\n      $1\n    </div>\n  )'
+                    );
+                  }
                 }
               }
             }
 
-            if (hasFixes) {
-              fixedContent = fixedLines.join('\n');
+            // Fix 2: Escape HTML angle brackets in strings
+            if (tsErrors.includes('Unexpected token') && tsErrors.includes('>')) {
+              manualFixed = manualFixed.replace(/([^\\])</g, '$1&lt;').replace(/([^\\])>/g, '$1&gt;');
+            }
+
+            // Fix 3: Fix unclosed JSX tags
+            if (tsErrors.includes('Expected corresponding JSX closing tag')) {
+              // Simple fix: ensure common tags are closed
+              const commonTags = ['div', 'section', 'p', 'h1', 'h2', 'h3', 'span', 'button'];
+              for (const tag of commonTags) {
+                const openCount = (manualFixed.match(new RegExp(`<${tag}[^>]*>`, 'g')) || []).length;
+                const closeCount = (manualFixed.match(new RegExp(`</${tag}>`, 'g')) || []).length;
+                if (openCount > closeCount) {
+                  manualFixed += `\n    </${tag}>`;
+                }
+              }
+            }
+
+            if (manualFixed !== pageText) {
+              fixedContent = manualFixed;
               needsFix = true;
             }
-          } catch (fixError) {
-            console.error('String literal fix failed:', fixError);
-          }
-        }
-
-        // Fix 4: Manual JSX fixes first
-        if (hasJsxError && !needsFix) {
-          let manualFixed = pageText;
-
-          // Fix 1: Add parent wrapper if multiple root elements
-          if (tsErrors.includes('JSX expressions must have one parent element')) {
-            // Look for return statement with multiple JSX elements
-            const returnMatch = manualFixed.match(/return\s*\(\s*([\s\S]*?)\s*\)/);
-            if (returnMatch) {
-              const returnContent = returnMatch[1];
-              // Check if it starts with < and has multiple top-level elements
-              if (returnContent.includes('<') && !returnContent.trim().startsWith('<>') && !returnContent.trim().startsWith('<div') && !returnContent.trim().startsWith('<React.Fragment')) {
-                // Count top-level JSX elements
-                const topLevelJsx = returnContent.match(/<[^/][^>]*>/g) || [];
-                if (topLevelJsx.length > 1) {
-                  manualFixed = manualFixed.replace(
-                    /return\s*\(\s*([\s\S]*?)\s*\)/,
-                    'return (\n    <div>\n      $1\n    </div>\n  )'
-                  );
-                }
-              }
-            }
           }
 
-          // Fix 2: Escape HTML angle brackets in strings
-          if (tsErrors.includes('Unexpected token') && tsErrors.includes('>')) {
-            manualFixed = manualFixed.replace(/([^\\])</g, '$1&lt;').replace(/([^\\])>/g, '$1&gt;');
-          }
-
-          // Fix 3: Fix unclosed JSX tags
-          if (tsErrors.includes('Expected corresponding JSX closing tag')) {
-            // Simple fix: ensure common tags are closed
-            const commonTags = ['div', 'section', 'p', 'h1', 'h2', 'h3', 'span', 'button'];
-            for (const tag of commonTags) {
-              const openCount = (manualFixed.match(new RegExp(`<${tag}[^>]*>`, 'g')) || []).length;
-              const closeCount = (manualFixed.match(new RegExp(`</${tag}>`, 'g')) || []).length;
-              if (openCount > closeCount) {
-                manualFixed += `\n    </${tag}>`;
-              }
-            }
-          }
-
-          if (manualFixed !== pageText) {
-            fixedContent = manualFixed;
-            needsFix = true;
-          }
-        }
-
-        // Fix 5: If manual fixes didn't work or there are still JSX errors, ask AI to fix them
-        if (hasJsxError && !needsFix) {
+          // Fix 5: If manual fixes didn't work or there are still JSX errors, ask AI to fix them
+          if (hasJsxError && !needsFix) {
           try {
             const jsxFixCompletion = await openai.chat.completions.create({
               model: "gpt-4o-mini",
@@ -807,14 +822,55 @@ All files must be TypeScript/TSX where applicable. Ensure they integrate with sr
             console.error('AI fix failed:', aiError);
           }
         }
+
+          // Fix 6: If there are property/interface errors, ask AI to fix them
+          if (hasPropError && !needsFix) {
+            try {
+              const propFixCompletion = await openai.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [
+                  {
+                    role: "system",
+                    content: "You are a TypeScript expert. Fix property and interface errors - remove extra properties that don't exist in types, add missing required properties, fix property name mismatches. Return ONLY the corrected code, no explanations."
+                  },
+                  {
+                    role: "user",
+                    content: `Fix the TypeScript property/interface errors in this code:\n\n${tsErrors}\n\nCode:\n\`\`\`\n${pageText}\n\`\`\``
+                  }
+                ],
+                temperature: 0.3,
+                max_tokens: 8000
+              });
+              
+              const fixedCode = propFixCompletion.choices[0]?.message?.content || '';
+              const cleaned = fixedCode.replace(/```tsx\n?/g, '').replace(/```\n?/g, '').trim();
+              
+              if (cleaned.length > 100) {
+                fixedContent = cleaned;
+                needsFix = true;
+              }
+            } catch (aiError) {
+              console.error('AI property fix failed:', aiError);
+          }
+        }
         
         if (needsFix) {
-          await sandbox.fs.uploadFile(Buffer.from(fixedContent), '/workspace/src/App.tsx');
-          // Continue loop to re-check
-          continue;
-        } else {
+            await sandbox.fs.uploadFile(Buffer.from(fixedContent), filePath);
+            anyFileFixed = true;
+            console.log(`✅ Fixed: ${errorFile}`);
+          }
+        }
+        
+        if (!anyFileFixed) {
+          console.log('⚠️ No files were fixed in this attempt, stopping auto-fix loop');
           break;
         }
+      }
+      
+      if (hasErrors) {
+        const finalTsCheck = await sandbox.process.executeCommand('cd /workspace && npx tsc --noEmit 2>&1 || true');
+        console.error('❌ FINAL TypeScript errors after all auto-fixes:');
+        console.error(finalTsCheck.result);
       }
       
       // Prepare complete file list for GitHub-ready project (declare before auto-fix loop)
@@ -826,12 +882,7 @@ All files must be TypeScript/TSX where applicable. Ensure they integrate with sr
       const tsConfigNode = templateFiles['tsconfig.node.json']
       const indexHtml = templateFiles['index.html']
 
-      // Check if AI generated these core files to avoid duplicates
-      const aiGeneratedPaths = filesData.files.map(f => f.path.replace('app/', 'src/'));
-      const hasAppTsx = aiGeneratedPaths.includes('src/App.tsx');
-      const hasMainTsx = aiGeneratedPaths.includes('src/main.tsx');
-      const hasIndexCss = aiGeneratedPaths.includes('src/index.css');
-
+      // Note: aiGeneratedPaths, hasAppTsx, hasMainTsx, hasIndexCss already declared above
       const allFiles = [
         // Configuration files
         { path: 'package.json', content: packageJson },
@@ -1034,7 +1085,7 @@ export default function ${componentName}({}: Props) {
             )) {
               await sandbox.fs.uploadFile(Buffer.from(fixed), abs)
               console.log('Applied AI fix to', rel)
-            } else {
+                } else {
               console.log('⚠️ AI fix rejected: invalid code structure')
             }
           } catch (e) {

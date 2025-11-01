@@ -1341,15 +1341,6 @@ ${fileContent}
         const hasRamelow = htmlContent.includes('Ramelow');
         const hasAreo = htmlContent.includes('Areo') || htmlContent.includes('areo');
         console.log(`🔍 HTML verification: Contains 'Ramelow': ${hasRamelow}, Contains 'Areo': ${hasAreo}`);
-        console.log(`📄 HTML preview (first 200 chars):`, htmlContent.substring(0, 200));
-        
-        // Check for image references
-        const imageRefs = htmlContent.match(/<img[^>]*src=["'][^"']*["']/g);
-        if (imageRefs) {
-          console.log('🖼️  Image references in HTML:', imageRefs);
-        } else {
-          console.log('⚠️  No image references found in HTML - images may be in JS bundle');
-        }
       }
 
       // 🎯 CRITICAL: Only save to database if build succeeded

@@ -94,6 +94,36 @@ function stitchChunks(units: string[], maxChars: number, overlap: number): strin
   let current = ''
   for (const u of units) {
     const add = (u.endsWith('\n') ? u : u + '\n')
+    
+    // If a single unit is larger than maxChars, split it using chunkContent
+    if (add.length > maxChars) {
+      // First, save current buffer if it exists
+      if (current.trim().length > 0) {
+        out.push(current)
+        current = ''
+      }
+      // Split the large unit into smaller chunks
+      const largeUnitChunks = chunkContent(add, maxChars, overlap)
+      for (let i = 0; i < largeUnitChunks.length; i++) {
+        if (i === largeUnitChunks.length - 1 && current.length > 0) {
+          // Last chunk: merge with current if space allows
+          if ((current + largeUnitChunks[i]).length <= maxChars) {
+            current += largeUnitChunks[i]
+          } else {
+            out.push(current)
+            current = largeUnitChunks[i]
+          }
+        } else {
+          if (current.trim().length > 0) {
+            out.push(current)
+          }
+          current = largeUnitChunks[i]
+        }
+      }
+      continue
+    }
+    
+    // Normal case: check if adding this unit would exceed maxChars
     if ((current + add).length > maxChars && current.length > 0) {
       out.push(current)
       const tail = current.slice(Math.max(0, current.length - overlap))
@@ -103,7 +133,19 @@ function stitchChunks(units: string[], maxChars: number, overlap: number): strin
     }
   }
   if (current.trim().length) out.push(current)
-  return out
+  
+  // Final validation: ensure no chunk exceeds maxChars (safety check)
+  const validated: string[] = []
+  for (const chunk of out) {
+    if (chunk.length > maxChars) {
+      // Split oversized chunks
+      const splitChunks = chunkContent(chunk, maxChars, overlap)
+      validated.push(...splitChunks)
+    } else {
+      validated.push(chunk)
+    }
+  }
+  return validated
 }
 
 

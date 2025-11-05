@@ -26,6 +26,8 @@ interface SandboxResponse {
   upgradeRequired?: boolean;
   lastModified?: number;
   tokensUsed?: number;
+  requestId?: string; // For status polling
+  details?: string; // Error details
 }
 
 type ViewMode = 'preview' | 'code';
@@ -41,6 +43,8 @@ export default function Home() {
   const [hasGenerated, setHasGenerated] = useState(false)
   const [sandboxData, setSandboxData] = useState<SandboxResponse | null>(null)
   const [progress, setProgress] = useState('')
+  const [progressPercent, setProgressPercent] = useState(0)
+  const [completedItems, setCompletedItems] = useState<Array<{ name: string; type: 'component' | 'task' }>>([])
   const [error, setError] = useState('')
   const [viewMode, setViewMode] = useState<ViewMode>('preview')
   const [selectedFile, setSelectedFile] = useState<string>('app/page.tsx')
@@ -82,7 +86,7 @@ export default function Home() {
       }
       
       // Validate file size (max 5MB per image)
-      if (file.size > 5 * 1024 * 1024) {
+      if (file.size > 8 * 1024 * 1024) {
         alert(`${file.name} is too large (max 5MB)`)
         return
       }
@@ -303,20 +307,90 @@ export default function Home() {
     hasStartedRef.current = true
     setHasGenerated(true)
     setIsGenerating(true)
-    setProgress('Generating code with AI...')
+    setProgress('Starting project generation...')
+    setProgressPercent(0)
     setError('') // Clear previous errors
     
+    // Generate requestId on frontend so we can start polling immediately
+    const requestId = Math.random().toString(36).slice(2, 8) + Date.now().toString(36);
+    
     try {
-      // Simulate progress updates
-      const progressTimer = setInterval(() => {
-        setProgress(prev => {
-          if (prev.includes('Generating')) return 'Creating sandbox environment...'
-          if (prev.includes('Creating')) return 'Setting up project...'
-          if (prev.includes('Setting')) return 'Installing dependencies...'
-          if (prev.includes('Installing')) return 'Starting development server...'
-          return prev
-        })
-      }, 8000)
+      // Start polling for status updates immediately
+      const statusPollInterval = setInterval(async () => {
+        try {
+          // Fetch both latest status and all statuses for tracking completed items
+          const [statusRes, allStatusRes] = await Promise.all([
+            fetch(`/api/generate/status?requestId=${requestId}`),
+            fetch(`/api/generate/status?requestId=${requestId}&all=true`)
+          ]);
+          
+          if (allStatusRes.ok) {
+            const allData = await allStatusRes.json();
+            if (allData.statuses) {
+              // Parse completed components and tasks from status messages
+              const newCompleted: Array<{ name: string; type: 'component' | 'task' }> = [];
+              
+              for (const status of allData.statuses) {
+                // Extract component names from completion messages
+                // Format: "✓ Header component completed" or "✓ Create Footer component completed"
+                if (status.step === 'components' && status.message.includes('✓') && status.message.includes('component completed')) {
+                  const componentMatch = status.message.match(/✓\s*([A-Z][a-zA-Z0-9]*)\s+component completed/i);
+                  if (componentMatch) {
+                    const componentName = componentMatch[1];
+                    if (!newCompleted.some(item => item.name === componentName && item.type === 'component')) {
+                      newCompleted.push({ name: componentName, type: 'component' });
+                    }
+                  }
+                }
+                
+                // Extract App completion
+                // Format: "✓ App completed"
+                if (status.step === 'app' && status.message.includes('✓') && status.message.includes('App')) {
+                  if (!newCompleted.some(item => item.name === 'App' && item.type === 'task')) {
+                    newCompleted.push({ name: 'App', type: 'task' });
+                  }
+                }
+                
+                // Check for build completion
+                // Format: "✅ Build completed"
+                if (status.step === 'build' && status.message.includes('✅') && status.message.includes('Build')) {
+                  if (!newCompleted.some(item => item.name === 'Build' && item.type === 'task')) {
+                    newCompleted.push({ name: 'Build', type: 'task' });
+                  }
+                }
+              }
+              
+              setCompletedItems(newCompleted);
+            }
+          }
+          
+          if (statusRes.ok) {
+            const status = await statusRes.json();
+            // Filter out technical messages - only show "feel-good" ones
+            const technicalKeywords = ['Compiling', 'Fixing', 'Retrying', 'Model overloaded', 'Installing', 'Uploading', 'Template setup'];
+            const isTechnical = technicalKeywords.some(keyword => status.message?.includes(keyword));
+            
+            // Always update progress, even if message is "Status not found" initially
+            if (status && status.message) {
+              if (status.message !== 'Status not found' && !isTechnical) {
+                setProgress(status.message);
+              } else if (!isTechnical) {
+                // Show a loading message while waiting for status
+                setProgress('Initializing...');
+              }
+              if (status.progress !== undefined) {
+                setProgressPercent(status.progress);
+              }
+              if (status.step === 'complete' || status.progress === 100) {
+                clearInterval(statusPollInterval);
+                setProgressPercent(100);
+              }
+            }
+          }
+        } catch (e) {
+          // Ignore polling errors
+        }
+      }, 1000); // Poll every second
 
       const res = await fetch('/api/generate', {
         method: 'POST',
@@ -326,16 +400,32 @@ export default function Home() {
         body: JSON.stringify({ 
           prompt: prompt.trim(),
           images: uploadedImages,
-          imageNames: uploadedImageNames
+          imageNames: uploadedImageNames,
+          requestId: requestId // Send requestId to backend
         }),
       })
 
-      clearInterval(progressTimer)
-
-      const data: SandboxResponse = await res.json()
+      // Get response data
+      let data: SandboxResponse;
+      try {
+        data = await res.json();
+      } catch (parseError) {
+        clearInterval(statusPollInterval);
+        console.error('Failed to parse response:', parseError);
+        setError('Failed to parse server response');
+        setIsGenerating(false);
+        hasStartedRef.current = false;
+        return;
+      }
+      
+      // Stop polling on any error
+      if (!res.ok || !data.success) {
+        clearInterval(statusPollInterval);
+      }
       
       // Check for auth or limit errors
       if (res.status === 401) {
+        clearInterval(statusPollInterval);
         setError('Please sign in to continue')
         setShowAuthModal(true)
         setHasGenerated(false)
@@ -345,6 +435,7 @@ export default function Home() {
       }
       
       if (res.status === 403) {
+        clearInterval(statusPollInterval);
         setError(data.error || 'Generation limit exceeded')
         if (data.upgradeRequired) {
           setError(`${data.error} - Upgrade to continue. Generations remaining: ${data.generationsRemaining || 0}`)
@@ -356,28 +447,35 @@ export default function Home() {
       }
       
       if (!res.ok) {
+        clearInterval(statusPollInterval);
         console.error('Generate failed status:', res.status, res.statusText)
-        try {
-          const err = await res.json()
-          console.error('Generate failed:', err)
-        } catch {
-          const txt = await res.text().catch(() => '')
-          console.error('Generate failed (raw):', txt)
-        }
-        throw new Error('Failed to create sandbox')
+        console.error('Generate failed response:', data)
+        setError(data.error || (data as any).details || 'Failed to create sandbox')
+        setHasGenerated(false)
+        hasStartedRef.current = false
+        setIsGenerating(false)
+        return
       }
 
       setSandboxData(data)
-      setProgress('✅ Website is ready!')
       
-      if (!data.success) {
+      // Progress will be updated by polling, but show completion message
+      if (data.success) {
+        setProgress('✅ Website is ready!')
+        setProgressPercent(100)
+      } else {
         setError(data.error || 'Failed to create sandbox')
+        clearInterval(statusPollInterval);
       }
     } catch (err) {
       console.error('Error creating sandbox:', err)
-      setError('Failed to create sandbox and execute code')
+      setError(err instanceof Error ? err.message : 'Failed to create sandbox and execute code')
       setProgress('')
+      setProgressPercent(0)
       hasStartedRef.current = false
+      setIsGenerating(false)
+      // Note: If statusPollInterval was created, it should have been cleared above
+      // But we can't access it here since it's in the try block scope
     } finally {
       setIsGenerating(false)
     }
@@ -389,10 +487,12 @@ export default function Home() {
     setHasGenerated(false)
     setSandboxData(null)
     setProgress('')
+    setProgressPercent(0)
     setError('')
     setAmendmentHistory([])
     setUploadedImages([])
     setUploadedImageNames([])
+    setCompletedItems([])
     hasStartedRef.current = false
     
     // Clear URL params if any
@@ -474,16 +574,9 @@ export default function Home() {
         }
         setSandboxData(updatedSandboxData)
 
-        // Force a complete reload of the preview by clearing and resetting
+        // Clear success message after a delay (but don't reload the iframe)
         setTimeout(() => {
-          // Clear success message
           setProgress('')
-          // Force iframe reload by updating the URL with a new timestamp
-          setSandboxData(prev => prev && prev.url ? {
-            ...prev,
-            url: `${prev.url.split('?')[0]}?t=${Date.now()}`,
-            lastModified: Date.now()
-          } : prev);
         }, 3000)
       }
     } catch (err) {
@@ -528,16 +621,14 @@ export default function Home() {
       setDebugResults(data)
       setProgress(data.message || 'Debug scan complete')
 
-      // If fixes were applied, refresh the preview
-      if (data.fixesApplied > 0) {
-        setTimeout(() => {
-          // Force iframe reload with cache busting
-          setSandboxData(prev => prev && prev.url ? {
-            ...prev,
-            url: `${prev.url.split('?')[0]}?t=${Date.now()}`,
-            lastModified: Date.now()
-          } : prev);
-        }, 2000)
+      // If fixes were applied, refresh the preview (but only once, not repeatedly)
+      if (data.fixesApplied > 0 && sandboxData?.url) {
+        // Update URL with cache busting only once
+        setSandboxData(prev => prev && prev.url ? {
+          ...prev,
+          url: `${prev.url.split('?')[0]}?t=${Date.now()}`,
+          lastModified: Date.now()
+        } : prev);
       }
 
     } catch (err) {
@@ -774,33 +865,36 @@ export default function Home() {
               <div className="space-y-4">
                 {(isGenerating || isAmending) && (
                   <div className="space-y-4">
-                    <div className="flex items-center space-x-3">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-500"></div>
-                      <p className="text-sm text-gray-300">{progress}</p>
-                    </div>
-                    <div className="bg-gray-800/50 rounded-lg p-4">
-                      <div className="space-y-2">
-                        <div className="flex items-center space-x-2">
-                          <div className={`w-2 h-2 rounded-full ${progress.includes('Generating') ? 'bg-purple-500 animate-pulse' : 'bg-green-500'}`}></div>
-                          <p className="text-xs text-gray-400">AI Code Generation</p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <div className={`w-2 h-2 rounded-full ${progress.includes('Creating') ? 'bg-purple-500 animate-pulse' : progress.includes('Generating') ? 'bg-gray-600' : 'bg-green-500'}`}></div>
-                          <p className="text-xs text-gray-400">Sandbox Environment</p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <div className={`w-2 h-2 rounded-full ${progress.includes('Setting') ? 'bg-purple-500 animate-pulse' : progress.includes('Generating') || progress.includes('Creating') ? 'bg-gray-600' : 'bg-green-500'}`}></div>
-                          <p className="text-xs text-gray-400">Project Setup</p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <div className={`w-2 h-2 rounded-full ${progress.includes('Installing') ? 'bg-purple-500 animate-pulse' : progress.includes('Starting') || progress.includes('ready') ? 'bg-green-500' : 'bg-gray-600'}`}></div>
-                          <p className="text-xs text-gray-400">Dependencies</p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <div className={`w-2 h-2 rounded-full ${progress.includes('Starting') ? 'bg-purple-500 animate-pulse' : progress.includes('ready') ? 'bg-green-500' : 'bg-gray-600'}`}></div>
-                          <p className="text-xs text-gray-400">Dev Server</p>
+                    <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700/50">
+                      <div className="flex items-center space-x-3 mb-3">
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-purple-500"></div>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-gray-200">{progress || 'Starting...'}</p>
                         </div>
                       </div>
+                      {/* Progress bar */}
+                      <div className="w-full bg-gray-700/50 rounded-full h-1.5 overflow-hidden mb-3">
+                        <div 
+                          className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-500"
+                          style={{ width: `${progressPercent}%` }}
+                        ></div>
+                      </div>
+                      {/* Completed items with checkmarks */}
+                      {completedItems.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          {completedItems.map((item, idx) => (
+                            <div
+                              key={`${item.name}-${idx}`}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-green-500/20 border border-green-500/50 rounded-md text-xs"
+                            >
+                              <svg className="w-3.5 h-3.5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                              <span className="text-green-400 font-medium">{item.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1000,7 +1094,7 @@ export default function Home() {
               )}
               {sandboxData.url && (
                 <iframe
-                  key={`${sandboxData.url}-${sandboxData.lastModified || 0}`}
+                  key={sandboxData.url}
                   src={sandboxData.url}
                   className="flex-1 w-full border-0"
                   title="Website Preview"
@@ -1379,26 +1473,6 @@ export default function Home() {
               </div>
             </form>
 
-            {isGenerating && (
-              <div className="mt-8">
-                <div className="bg-gray-800/50 rounded-lg p-4">
-                  <div className="space-y-2">
-                    <div className="flex items-center space-x-2">
-                      <div className={`w-2 h-2 rounded-full ${progress.includes('Generating') ? 'bg-purple-500 animate-pulse' : 'bg-green-500'}`}></div>
-                      <p className="text-xs text-gray-400">AI Code Generation</p>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <div className={`w-2 h-2 rounded-full ${progress.includes('Creating') ? 'bg-purple-500 animate-pulse' : progress.includes('Generating') ? 'bg-gray-600' : 'bg-green-500'}`}></div>
-                      <p className="text-xs text-gray-400">Sandbox Environment</p>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <div className={`w-2 h-2 rounded-full ${progress.includes('Installing') ? 'bg-purple-500 animate-pulse' : progress.includes('Starting') || progress.includes('ready') ? 'bg-green-500' : 'bg-gray-600'}`}></div>
-                      <p className="text-xs text-gray-400">Dependencies</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
 
             {error && (
               <div className="mt-6 bg-red-500/20 border border-red-500/50 rounded-lg p-4">

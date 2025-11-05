@@ -21,6 +21,34 @@ export async function uploadBuild(
   const fileContents = files.map(f => `${f.path}:${f.content.toString('base64')}`).join('\n')
   const buildHash = crypto.createHash('sha256').update(fileContents).digest('hex')
 
+  // Delete all existing files in the project directory first to ensure clean state
+  try {
+    const storagePrefix = `${userId}/${projectId}/`
+    const { data: existingFiles, error: listError } = await supabaseAdmin.storage
+      .from(BUCKET_NAME)
+      .list(storagePrefix.replace(/\/$/, ''), {
+        limit: 1000,
+        sortBy: { column: 'name', order: 'asc' }
+      })
+    
+    if (!listError && existingFiles && existingFiles.length > 0) {
+      const filesToDelete = existingFiles.map(f => `${storagePrefix}${f.name}`)
+      console.log(`🗑️ Deleting ${filesToDelete.length} old build file(s) before upload...`)
+      
+      for (const filePath of filesToDelete) {
+        const { error: deleteError } = await supabaseAdmin.storage
+          .from(BUCKET_NAME)
+          .remove([filePath])
+        if (deleteError) {
+          console.warn(`⚠️ Failed to delete old file ${filePath}:`, deleteError)
+        }
+      }
+      console.log(`✅ Cleaned ${filesToDelete.length} old file(s)`)
+    }
+  } catch (cleanupError) {
+    console.warn('⚠️ Failed to cleanup old files (continuing anyway):', cleanupError)
+  }
+
   // Upload files to Supabase storage
   for (const file of files) {
     const storagePath = `${userId}/${projectId}/${file.path}`
@@ -29,7 +57,7 @@ export async function uploadBuild(
       .from(BUCKET_NAME)
       .upload(storagePath, file.content, {
         contentType: getContentType(file.path),
-        upsert: true // Overwrite previous build
+        upsert: true // Overwrite previous build (shouldn't be needed after cleanup, but safety net)
       })
 
     if (error) {

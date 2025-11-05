@@ -1,20 +1,11 @@
-import { useState } from 'react'
-
+// This is a placeholder - will be replaced by AI-generated App.tsx
+// If you see this, it means the AI failed to generate App.tsx
 function App() {
-  const [count, setCount] = useState(0)
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-indigo-50 to-purple-50 flex items-center justify-center">
+    <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center p-4">
       <div className="text-center">
-        <h1 className="text-6xl font-bold text-gray-900 mb-8">
-          Generated App
-        </h1>
-        <button
-          onClick={() => setCount(count + 1)}
-          className="bg-indigo-600 text-white px-8 py-4 rounded-xl hover:shadow-2xl hover:scale-105 transition-all duration-300 text-lg font-semibold"
-        >
-          Count is {count}
-        </button>
+        <h1 className="text-4xl font-bold mb-4">App Generation in Progress</h1>
+        <p className="text-gray-400">The AI-generated App.tsx will replace this placeholder.</p>
       </div>
     </div>
   )

@@ -13,9 +13,9 @@ const nextConfig = {
       },
     },
   },
-  // Reduce noisy request logging in dev
+  // Show all logs in dev for debugging
   logging: {
-    level: 'error',
+    level: 'verbose', // Change to 'error' later to reduce noise
   },
   // Webpack
   webpack: (config, { isServer }) => {

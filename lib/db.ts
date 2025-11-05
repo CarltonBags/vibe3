@@ -134,17 +134,26 @@ export async function updateProject(
 
 /**
  * Save project files to database
+ * @deprecated Use saveProjectFilesToBuild instead to ensure files are linked to builds
  */
 export async function saveProjectFiles(
   projectId: string,
-  files: Array<{ path: string; content: string }>
+  files: Array<{ path: string; content: string }>,
+  buildId?: string | null
 ) {
-  // Prepare files to insert (do NOT overwrite previous versions)
+  // If buildId is provided, use the build-aware function
+  if (buildId) {
+    return saveProjectFilesToBuild(projectId, buildId, files)
+  }
+  
+  // Legacy path: save without build_id (not recommended)
+  console.warn(`⚠️ Saving files without build_id for project ${projectId}. Files will have build_id: null`)
   const filesToInsert = files.map(file => ({
     project_id: projectId,
     file_path: file.path,
     file_content: file.content,
-    file_size: Buffer.from(file.content).length
+    file_size: Buffer.from(file.content).length,
+    build_id: null
   }))
   const { error } = await supabaseAdmin
     .from('project_files')
@@ -174,6 +183,27 @@ export async function getLatestBuildVersion(projectId: string): Promise<number> 
     return 0
   }
   return data?.version || 0
+}
+
+/**
+ * Get the latest build_id for a project
+ */
+export async function getLatestBuildId(projectId: string): Promise<string | null> {
+  const { data, error } = await supabaseAdmin
+    .from('builds')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('status', 'success') // Only get successful builds
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    // Table may not exist yet, or no builds
+    console.warn('Error fetching latest build_id:', error)
+    return null
+  }
+  return data?.id || null
 }
 
 export async function createBuild(
@@ -303,12 +333,38 @@ export async function saveProjectFilesToBuild(
   }
 }
 
+/**
+ * Delete old chunks for specific files (before re-inserting updated chunks)
+ */
+export async function deleteFileChunks(
+  projectId: string,
+  filePaths: string[]
+) {
+  if (filePaths.length === 0) return
+  const { error } = await supabaseAdmin
+    .from('file_chunks')
+    .delete()
+    .eq('project_id', projectId)
+    .in('file_path', filePaths)
+  if (error) {
+    console.error('Error deleting old file chunks:', error)
+    // don't throw; embeddings are auxiliary
+  } else {
+    console.log(`🗑️ Deleted old chunks for ${filePaths.length} file(s)`)
+  }
+}
+
 export async function saveFileChunks(
   projectId: string,
   buildId: string | null,
   chunks: Array<{ file_path: string; chunk_index: number; content: string; embedding: number[] }>
 ) {
   if (chunks.length === 0) return
+  
+  // Delete old chunks for the files we're updating
+  const filePaths = Array.from(new Set(chunks.map(c => c.file_path)))
+  await deleteFileChunks(projectId, filePaths)
+  
   const payload = chunks.map(c => ({
     project_id: projectId,
     build_id: buildId,
@@ -323,22 +379,59 @@ export async function saveFileChunks(
   if (error) {
     console.error('Error saving file chunks:', error)
     // don't throw; embeddings are auxiliary
+  } else {
+    console.log(`✅ Saved ${chunks.length} chunk(s) for ${filePaths.length} file(s)`)
   }
 }
 
 /**
  * Get project files from database
  */
-export async function getProjectFiles(projectId: string) {
-  const { data, error } = await supabaseAdmin
+export async function getProjectFiles(projectId: string, buildId?: string | null) {
+  let query = supabaseAdmin
     .from('project_files')
     .select('*')
     .eq('project_id', projectId)
+  
+  // If buildId is provided, filter by it
+  if (buildId) {
+    query = query.eq('build_id', buildId)
+  } else {
+    // Otherwise, get the latest build_id and filter by it
+    const latestBuildId = await getLatestBuildId(projectId)
+    if (latestBuildId) {
+      query = query.eq('build_id', latestBuildId)
+      console.log(`📦 Fetching files from latest build: ${latestBuildId}`)
+    } else {
+      // Fallback: get latest per file path (for projects without builds table)
+      console.log(`⚠️ No build_id found, using latest per file path`)
+      // This will be handled by the ordering below
+    }
+  }
+  
+  const { data, error } = await query
     .order('file_path')
+    .order('created_at', { ascending: false })
 
   if (error) {
     console.error('Error fetching project files:', error)
     throw new Error('Failed to fetch project files')
+  }
+
+  // If no build_id filtering, deduplicate by file_path (keep latest)
+  if (!buildId) {
+    const latestBuildId = await getLatestBuildId(projectId)
+    if (!latestBuildId) {
+      // Deduplicate by file_path, keeping the most recent
+      const fileMap = new Map<string, ProjectFile>()
+      for (const file of (data || [])) {
+        const existing = fileMap.get(file.file_path)
+        if (!existing || new Date(file.created_at) > new Date(existing.created_at)) {
+          fileMap.set(file.file_path, file)
+        }
+      }
+      return Array.from(fileMap.values())
+    }
   }
 
   return data as ProjectFile[]
@@ -347,19 +440,48 @@ export async function getProjectFiles(projectId: string) {
 export async function matchFileChunks(
   projectId: string,
   embedding: number[],
-  matchCount = 20
+  matchCount = 20,
+  buildId?: string | null
 ) {
+  // Get latest build_id if not provided
+  let targetBuildId = buildId
+  if (!targetBuildId) {
+    targetBuildId = await getLatestBuildId(projectId)
+    if (targetBuildId) {
+      console.log(`🔍 Vector search using latest build_id: ${targetBuildId}`)
+    }
+  }
+  
+  // If we have a build_id, we need to filter chunks by it
+  // The RPC function doesn't support build_id filtering, so we'll filter after
   const { data, error } = await supabaseAdmin
     .rpc('match_file_chunks', {
       p_project_id: projectId,
       p_query: embedding as unknown as any,
-      p_match_count: matchCount
+      p_match_count: targetBuildId ? matchCount * 2 : matchCount // Get more if filtering
     })
   if (error) {
     console.error('Error matching file chunks:', error)
     return []
   }
-  return data as Array<{ id: string; project_id: string; build_id: string | null; file_path: string; chunk_index: number; content: string; similarity: number }>
+  
+  let results = data as Array<{ id: string; project_id: string; build_id: string | null; file_path: string; chunk_index: number; content: string; similarity: number }>
+  
+  // Filter by build_id if provided
+  if (targetBuildId) {
+    results = results.filter(chunk => chunk.build_id === targetBuildId)
+    // If we filtered out too many, take top matches
+    results = results.slice(0, matchCount)
+    console.log(`✅ Filtered to ${results.length} chunks from build ${targetBuildId}`)
+  } else if (results.length > 0) {
+    // If no build_id, warn about potential stale chunks
+    const uniqueBuildIds = new Set(results.map(r => r.build_id).filter(Boolean))
+    if (uniqueBuildIds.size > 1) {
+      console.warn(`⚠️ Vector search returned chunks from ${uniqueBuildIds.size} different builds. Consider using latest build_id.`)
+    }
+  }
+  
+  return results
 }
 
 /**

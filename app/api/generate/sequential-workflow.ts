@@ -428,6 +428,26 @@ export async function executeSequentialWorkflow(
   const compilationAttempts: Record<string, number> = {};
   const MAX_FIX_ATTEMPTS = 5;
   
+  const declaredDependencies = new Set<string>();
+
+  const refreshDeclaredDependencies = (pkgContent: string) => {
+    try {
+      const pkgJson = JSON.parse(pkgContent);
+      declaredDependencies.clear();
+      Object.keys(pkgJson.dependencies || {}).forEach((dep) => declaredDependencies.add(dep));
+      Object.keys(pkgJson.devDependencies || {}).forEach((dep) => declaredDependencies.add(dep));
+    } catch (error) {
+      console.warn('[generate] Failed to parse package.json while refreshing dependencies:', error);
+    }
+  };
+
+  try {
+    const pkgBuffer = await sandbox.fs.downloadFile('/workspace/package.json');
+    refreshDeclaredDependencies(pkgBuffer.toString('utf-8'));
+  } catch (error) {
+    console.warn('[generate] Could not read package.json to seed dependency list:', error);
+  }
+
   console.log(`[generate:${requestId}] Starting sequential workflow with ${taskFlow.length} tasks`);
   addStatus(requestId, 'components', `Building ${taskFlow.length} components...`, 30);
   
@@ -478,6 +498,48 @@ export async function executeSequentialWorkflow(
           imageNames,
           userPrompt
         );
+
+        if (generated && generated.files) {
+          // If package.json was updated in this generation, refresh declared deps
+          const packageFile = generated.files.find((f) => f.path === 'package.json');
+          if (packageFile) {
+            refreshDeclaredDependencies(packageFile.content);
+          }
+
+          const missingDeps = new Set<string>();
+
+          for (const file of generated.files) {
+            const importRegex = /from\s+['"]([^'"\n]+)['"]/g;
+            let match: RegExpExecArray | null;
+            while ((match = importRegex.exec(file.content)) !== null) {
+              const moduleName = match[1];
+
+              if (
+                moduleName.startsWith('.') ||
+                moduleName.startsWith('@/') ||
+                moduleName.startsWith('~')
+              ) {
+                continue;
+              }
+
+              const baseName = moduleName.startsWith('@')
+                ? moduleName.split('/').slice(0, 2).join('/')
+                : moduleName.split('/')[0];
+
+              if (!declaredDependencies.has(baseName)) {
+                missingDeps.add(baseName);
+              }
+            }
+          }
+
+          if (missingDeps.size > 0) {
+            throw new Error(
+              `Missing dependencies: ${Array.from(missingDeps).join(
+                ', '
+              )}. Add them to package.json before using them.`
+            );
+          }
+        }
       } catch (err: any) {
         generationError = err;
         console.error(`[generate:${requestId}] Error generating ${task.file}:`, err?.message || err);

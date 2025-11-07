@@ -140,7 +140,7 @@ export async function saveProjectFiles(
   projectId: string,
   files: Array<{ path: string; content: string }>,
   buildId?: string | null
-) {
+): Promise<void> {
   // If buildId is provided, use the build-aware function
   if (buildId) {
     return saveProjectFilesToBuild(projectId, buildId, files)
@@ -310,7 +310,7 @@ export async function saveProjectFilesToBuild(
   projectId: string,
   buildId: string | null,
   files: Array<{ path: string; content: string }>
-) {
+): Promise<void> {
   if (!buildId) {
     // Fallback to legacy saving
     return saveProjectFiles(projectId, files)
@@ -671,5 +671,70 @@ export async function updateUserTier(
     console.error('Error updating user tier:', error)
     throw new Error('Failed to update user tier')
   }
+}
+
+/**
+ * Save conversation messages to database
+ */
+export async function saveConversationMessages(
+  projectId: string,
+  messages: Array<{
+    role: 'system' | 'user' | 'assistant' | 'tool'
+    content?: string
+    tool_name?: string
+    tool_call_id?: string
+    metadata?: any
+  }>
+): Promise<void> {
+  const messageRows = messages
+    .filter(m => m.role !== 'system') // Don't save system messages
+    .map(m => ({
+      project_id: projectId,
+      role: m.role,
+      content: m.content || null,
+      tool_name: m.tool_name || null,
+      tool_call_id: m.tool_call_id || null,
+      metadata: m.metadata || {}
+    }))
+
+  if (messageRows.length === 0) return
+
+  const { error } = await supabaseAdmin
+    .from('conversation_messages')
+    .insert(messageRows)
+
+  if (error) {
+    console.error('Error saving conversation messages:', error)
+    // Don't throw - conversation history is nice-to-have
+  }
+}
+
+/**
+ * Load conversation history for a project
+ * Returns last N messages (default 50) to maintain context
+ */
+export async function getConversationHistory(
+  projectId: string,
+  limit: number = 50
+): Promise<Array<{
+  role: 'user' | 'assistant' | 'tool'
+  content?: string
+  tool_name?: string
+  tool_call_id?: string
+  metadata?: any
+}>> {
+  const { data, error } = await supabaseAdmin
+    .from('conversation_messages')
+    .select('role, content, tool_name, tool_call_id, metadata')
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: true })
+    .limit(limit)
+
+  if (error) {
+    console.error('Error loading conversation history:', error)
+    return []
+  }
+
+  return data || []
 }
 

@@ -311,106 +311,29 @@ export default function Home() {
     setProgressPercent(0)
     setError('') // Clear previous errors
     
-    // Generate requestId on frontend so we can start polling immediately
-    const requestId = Math.random().toString(36).slice(2, 8) + Date.now().toString(36);
-    
     try {
-      // Start polling for status updates immediately
-      const statusPollInterval = setInterval(async () => {
-        try {
-          // Fetch both latest status and all statuses for tracking completed items
-          const [statusRes, allStatusRes] = await Promise.all([
-            fetch(`/api/generate/status?requestId=${requestId}`),
-            fetch(`/api/generate/status?requestId=${requestId}&all=true`)
-          ]);
-          
-          if (allStatusRes.ok) {
-            const allData = await allStatusRes.json();
-            if (allData.statuses) {
-              // Parse completed components and tasks from status messages
-              const newCompleted: Array<{ name: string; type: 'component' | 'task' }> = [];
-              
-              for (const status of allData.statuses) {
-                // Extract component names from completion messages
-                // Format: "✓ Header component completed" or "✓ Create Footer component completed"
-                if (status.step === 'components' && status.message.includes('✓') && status.message.includes('component completed')) {
-                  const componentMatch = status.message.match(/✓\s*([A-Z][a-zA-Z0-9]*)\s+component completed/i);
-                  if (componentMatch) {
-                    const componentName = componentMatch[1];
-                    if (!newCompleted.some(item => item.name === componentName && item.type === 'component')) {
-                      newCompleted.push({ name: componentName, type: 'component' });
-                    }
-                  }
-                }
-                
-                // Extract App completion
-                // Format: "✓ App completed"
-                if (status.step === 'app' && status.message.includes('✓') && status.message.includes('App')) {
-                  if (!newCompleted.some(item => item.name === 'App' && item.type === 'task')) {
-                    newCompleted.push({ name: 'App', type: 'task' });
-                  }
-                }
-                
-                // Check for build completion
-                // Format: "✅ Build completed"
-                if (status.step === 'build' && status.message.includes('✅') && status.message.includes('Build')) {
-                  if (!newCompleted.some(item => item.name === 'Build' && item.type === 'task')) {
-                    newCompleted.push({ name: 'Build', type: 'task' });
-                  }
-                }
-              }
-              
-              setCompletedItems(newCompleted);
-            }
-          }
-          
-          if (statusRes.ok) {
-            const status = await statusRes.json();
-            // Filter out technical messages - only show "feel-good" ones
-            const technicalKeywords = ['Compiling', 'Fixing', 'Retrying', 'Model overloaded', 'Installing', 'Uploading', 'Template setup'];
-            const isTechnical = technicalKeywords.some(keyword => status.message?.includes(keyword));
-            
-            // Always update progress, even if message is "Status not found" initially
-            if (status && status.message) {
-              if (status.message !== 'Status not found' && !isTechnical) {
-                setProgress(status.message);
-              } else if (!isTechnical) {
-                // Show a loading message while waiting for status
-                setProgress('Initializing...');
-              }
-              if (status.progress !== undefined) {
-                setProgressPercent(status.progress);
-              }
-              if (status.step === 'complete' || status.progress === 100) {
-                clearInterval(statusPollInterval);
-                setProgressPercent(100);
-              }
-            }
-          }
-        } catch (e) {
-          // Ignore polling errors
-        }
-      }, 1000); // Poll every second
+      // Chat route doesn't use status polling - show progress
+      setProgress('🤖 Planning your project...')
+      setProgressPercent(10)
 
-      const res = await fetch('/api/generate', {
+      const res = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ 
-          prompt: prompt.trim(),
+          message: prompt.trim(),
           images: uploadedImages,
           imageNames: uploadedImageNames,
-          requestId: requestId // Send requestId to backend
+          template: 'vite-react'
         }),
       })
 
       // Get response data
-      let data: SandboxResponse;
+      let data: any;
       try {
         data = await res.json();
       } catch (parseError) {
-        clearInterval(statusPollInterval);
         console.error('Failed to parse response:', parseError);
         setError('Failed to parse server response');
         setIsGenerating(false);
@@ -418,14 +341,8 @@ export default function Home() {
         return;
       }
       
-      // Stop polling on any error
-      if (!res.ok || !data.success) {
-        clearInterval(statusPollInterval);
-      }
-      
       // Check for auth or limit errors
       if (res.status === 401) {
-        clearInterval(statusPollInterval);
         setError('Please sign in to continue')
         setShowAuthModal(true)
         setHasGenerated(false)
@@ -435,11 +352,7 @@ export default function Home() {
       }
       
       if (res.status === 403) {
-        clearInterval(statusPollInterval);
         setError(data.error || 'Generation limit exceeded')
-        if (data.upgradeRequired) {
-          setError(`${data.error} - Upgrade to continue. Generations remaining: ${data.generationsRemaining || 0}`)
-        }
         setHasGenerated(false)
         hasStartedRef.current = false
         setIsGenerating(false)
@@ -447,25 +360,44 @@ export default function Home() {
       }
       
       if (!res.ok) {
-        clearInterval(statusPollInterval);
-        console.error('Generate failed status:', res.status, res.statusText)
-        console.error('Generate failed response:', data)
-        setError(data.error || (data as any).details || 'Failed to create sandbox')
+        console.error('Chat failed status:', res.status, res.statusText)
+        console.error('Chat failed response:', data)
+        setError(data.error || 'Failed to create project')
         setHasGenerated(false)
         hasStartedRef.current = false
         setIsGenerating(false)
         return
       }
 
-      setSandboxData(data)
-      
-      // Progress will be updated by polling, but show completion message
+      // Chat route returns different format - adapt to SandboxResponse
       if (data.success) {
+        // If files are in response, use them; otherwise fetch them
+        let files = data.files || [];
+        if (files.length === 0 && data.projectId) {
+          // Fetch files if not in response
+          try {
+            const filesRes = await fetch(`/api/projects/${data.projectId}/files`);
+            const filesData = await filesRes.json();
+            files = filesData.files || [];
+          } catch (err) {
+            console.warn('Could not fetch files:', err);
+          }
+        }
+        
+        setSandboxData({
+          success: true,
+          sandboxId: '', // Chat route manages sandbox internally
+          projectId: data.projectId,
+          url: data.previewUrl || '',
+          files: files,
+        })
         setProgress('✅ Website is ready!')
         setProgressPercent(100)
+        setPrompt('')
+        setUploadedImages([])
+        setUploadedImageNames([])
       } else {
-        setError(data.error || 'Failed to create sandbox')
-        clearInterval(statusPollInterval);
+        setError(data.error || 'Failed to create project')
       }
     } catch (err) {
       console.error('Error creating sandbox:', err)
@@ -513,37 +445,21 @@ export default function Home() {
     setProgress('🔧 Processing your changes...')
 
     try {
-      let sandboxId = sandboxData.sandboxId
       const projectId = sandboxData.projectId || searchParams.get('projectId')
 
-      // If no sandbox exists (preview-only mode), spawn one first
-      if (!sandboxId && projectId) {
-        setProgress(' Starting development environment...')
-        const reopenResponse = await fetch(`/api/projects/${projectId}/reopen`, {
-          method: 'POST',
-        })
-
-        if (!reopenResponse.ok) {
-          throw new Error('Failed to start development environment')
-        }
-
-        const reopenData = await reopenResponse.json()
-        sandboxId = reopenData.sandboxId
-
-        // Update sandbox data with the new sandbox ID
-        setSandboxData(prev => prev ? { ...prev, sandboxId } : null)
+      if (!projectId) {
+        throw new Error('Project ID is required')
       }
 
-      const response = await fetch('/api/amend', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          amendmentPrompt: amendmentPrompt.trim(),
-          sandboxId: sandboxId,
+          message: amendmentPrompt.trim(),
           projectId: projectId,
-          currentFiles: sandboxData.files,
           images: uploadedImages,
-          imageNames: uploadedImageNames
+          imageNames: uploadedImageNames,
+          template: 'vite-react'
         }),
       })
 
@@ -561,20 +477,19 @@ export default function Home() {
         setAmendmentPrompt('')
         setUploadedImages([])
         setUploadedImageNames([])
-        setProgress(`✨ ${data.summary}`)
+        setProgress(`✨ Changes applied successfully!`)
 
-        // Update sandbox data with new files
-        const updatedSandboxData = {
-          ...sandboxData,
-          files: data.files,
-          url: data.url,
-          sandboxId: sandboxData.sandboxId,
-          lastModified: Date.now(), // Add timestamp to force iframe reload
-          tokensUsed: data.tokensUsed || sandboxData.tokensUsed // Preserve or update token count
+        // Update sandbox data with new preview URL if provided
+        if (data.previewUrl) {
+          const updatedSandboxData = {
+            ...sandboxData,
+            url: data.previewUrl,
+            lastModified: Date.now(), // Add timestamp to force iframe reload
+          }
+          setSandboxData(updatedSandboxData)
         }
-        setSandboxData(updatedSandboxData)
 
-        // Clear success message after a delay (but don't reload the iframe)
+        // Clear success message after a delay
         setTimeout(() => {
           setProgress('')
         }, 3000)
@@ -1153,8 +1068,17 @@ export default function Home() {
                     </svg>
                     src/
                   </div>
+                  {/* Root src files (App.tsx, main.tsx, etc.) */}
                   <div className="space-y-0.5 pl-2">
-                    {sandboxData.files?.filter(f => f.path.startsWith('src/') && !f.path.includes('/', 5)).map((file, idx) => (
+                    {sandboxData.files?.filter(f => {
+                      const path = f.path;
+                      return path.startsWith('src/') && 
+                             !path.includes('src/components/') && 
+                             !path.includes('src/pages/') && 
+                             !path.includes('src/lib/') &&
+                             !path.includes('src/hooks/') &&
+                             path.split('/').length === 2; // Only direct children of src/
+                    }).map((file, idx) => (
                       <button
                         key={`${file.path}-${idx}`}
                         onClick={() => setSelectedFile(file.path)}
@@ -1178,24 +1102,56 @@ export default function Home() {
                               <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6z"/>
                             </svg>
                           )}
-                          <span className="truncate">{file.path.replace('app/', '')}</span>
+                          <span className="truncate">{file.path.replace('src/', '')}</span>
                         </div>
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {/* src/components/ folder */}
-                {sandboxData.files?.some(f => f.path.startsWith('src/components/')) && (
+                {/* src/pages/ folder */}
+                {sandboxData.files?.some(f => f.path.startsWith('src/pages/')) && (
                   <div className="mb-3">
                     <div className="text-xs font-semibold text-gray-500 mb-1 px-2 flex items-center gap-1 pl-4">
                       <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
                       </svg>
-                      components/
+                      src/pages/
                     </div>
                     <div className="space-y-0.5 pl-4">
-                      {sandboxData.files?.filter(f => f.path.startsWith('src/components/')).map((file) => (
+                      {sandboxData.files?.filter(f => f.path.startsWith('src/pages/')).map((file) => (
+                        <button
+                          key={file.path}
+                          onClick={() => setSelectedFile(file.path)}
+                          className={`w-full text-left px-3 py-1.5 rounded text-xs transition-colors ${
+                            selectedFile === file.path
+                              ? 'bg-gray-700 text-white'
+                              : 'text-gray-400 hover:text-gray-300 hover:bg-gray-750'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <svg className="w-3.5 h-3.5 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M3 3h18v18H3V3m4.73 15.04l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27H7.73m4.05 0l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27h-2.43Z"/>
+                            </svg>
+                            <span className="truncate">{file.path.replace('src/pages/', '')}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* src/components/ folder (non-ui components) */}
+                {sandboxData.files?.some(f => f.path.startsWith('src/components/') && !f.path.startsWith('src/components/ui/')) && (
+                  <div className="mb-3">
+                    <div className="text-xs font-semibold text-gray-500 mb-1 px-2 flex items-center gap-1 pl-4">
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                      </svg>
+                      src/components/
+                    </div>
+                    <div className="space-y-0.5 pl-4">
+                      {sandboxData.files?.filter(f => f.path.startsWith('src/components/') && !f.path.startsWith('src/components/ui/')).map((file) => (
                         <button
                           key={file.path}
                           onClick={() => setSelectedFile(file.path)}
@@ -1210,6 +1166,102 @@ export default function Home() {
                               <path d="M3 3h18v18H3V3m4.73 15.04l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27H7.73m4.05 0l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27h-2.43Z"/>
                             </svg>
                             <span className="truncate">{file.path.replace('src/components/', '')}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* src/components/ui/ folder */}
+                {sandboxData.files?.some(f => f.path.startsWith('src/components/ui/')) && (
+                  <div className="mb-3">
+                    <div className="text-xs font-semibold text-gray-500 mb-1 px-2 flex items-center gap-1 pl-4">
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                      </svg>
+                      src/components/ui/
+                    </div>
+                    <div className="space-y-0.5 pl-4">
+                      {sandboxData.files?.filter(f => f.path.startsWith('src/components/ui/')).map((file) => (
+                        <button
+                          key={file.path}
+                          onClick={() => setSelectedFile(file.path)}
+                          className={`w-full text-left px-3 py-1.5 rounded text-xs transition-colors ${
+                            selectedFile === file.path
+                              ? 'bg-gray-700 text-white'
+                              : 'text-gray-400 hover:text-gray-300 hover:bg-gray-750'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <svg className="w-3.5 h-3.5 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M3 3h18v18H3V3m4.73 15.04l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27H7.73m4.05 0l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27h-2.43Z"/>
+                            </svg>
+                            <span className="truncate">{file.path.replace('src/components/ui/', '')}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* src/lib/ folder */}
+                {sandboxData.files?.some(f => f.path.startsWith('src/lib/')) && (
+                  <div className="mb-3">
+                    <div className="text-xs font-semibold text-gray-500 mb-1 px-2 flex items-center gap-1 pl-4">
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                      </svg>
+                      src/lib/
+                    </div>
+                    <div className="space-y-0.5 pl-4">
+                      {sandboxData.files?.filter(f => f.path.startsWith('src/lib/')).map((file) => (
+                        <button
+                          key={file.path}
+                          onClick={() => setSelectedFile(file.path)}
+                          className={`w-full text-left px-3 py-1.5 rounded text-xs transition-colors ${
+                            selectedFile === file.path
+                              ? 'bg-gray-700 text-white'
+                              : 'text-gray-400 hover:text-gray-300 hover:bg-gray-750'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <svg className="w-3.5 h-3.5 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M3 3h18v18H3V3m4.73 15.04l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27H7.73m4.05 0l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27h-2.43Z"/>
+                            </svg>
+                            <span className="truncate">{file.path.replace('src/lib/', '')}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* src/hooks/ folder */}
+                {sandboxData.files?.some(f => f.path.startsWith('src/hooks/')) && (
+                  <div className="mb-3">
+                    <div className="text-xs font-semibold text-gray-500 mb-1 px-2 flex items-center gap-1 pl-4">
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                      </svg>
+                      src/hooks/
+                    </div>
+                    <div className="space-y-0.5 pl-4">
+                      {sandboxData.files?.filter(f => f.path.startsWith('src/hooks/')).map((file) => (
+                        <button
+                          key={file.path}
+                          onClick={() => setSelectedFile(file.path)}
+                          className={`w-full text-left px-3 py-1.5 rounded text-xs transition-colors ${
+                            selectedFile === file.path
+                              ? 'bg-gray-700 text-white'
+                              : 'text-gray-400 hover:text-gray-300 hover:bg-gray-750'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <svg className="w-3.5 h-3.5 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M3 3h18v18H3V3m4.73 15.04l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27H7.73m4.05 0l.95-2.27c.2-.48.2-.99 0-1.47l-.95-2.27h2.43l.95 2.27c.2.48.2.99 0 1.47l-.95 2.27h-2.43Z"/>
+                            </svg>
+                            <span className="truncate">{file.path.replace('src/hooks/', '')}</span>
                           </div>
                         </button>
                       ))}

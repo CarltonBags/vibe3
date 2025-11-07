@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
+import { HelmetProvider } from 'react-helmet-async'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import App from './App.tsx'
 import './index.css'
@@ -26,13 +27,34 @@ window.addEventListener('unhandledrejection', (event) => {
   })
 })
 
+const getBaseName = () => {
+  const previewPrefix = '/api/preview/'
+  const { pathname } = window.location
+
+  if (pathname.startsWith(previewPrefix)) {
+    const segments = pathname.split('/')
+    // ['', 'api', 'preview', projectId, buildId, ...]
+    if (segments.length >= 5) {
+      const base = segments.slice(0, 5).join('/')
+      return base || '/'
+    }
+  }
+
+  const baseEnv = (import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env
+  return baseEnv?.BASE_URL ?? '/'
+}
+
+const basename = getBaseName()
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ErrorBoundary>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </ErrorBoundary>
+    <HelmetProvider>
+      <ErrorBoundary>
+        <BrowserRouter basename={basename}>
+          <App />
+        </BrowserRouter>
+      </ErrorBoundary>
+    </HelmetProvider>
   </React.StrictMode>,
 )
 

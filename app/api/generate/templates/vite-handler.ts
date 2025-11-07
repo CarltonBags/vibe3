@@ -119,9 +119,14 @@ export class ViteHandler {
       )
     }
     
+    const tailwindConfig = templateFiles['tailwind.config.ts']
+    if (!tailwindConfig) {
+      throw new Error('Tailwind config (tailwind.config.ts) not found in Vite template')
+    }
+
     await sandbox.fs.uploadFile(
-      Buffer.from(templateFiles['tailwind.config.js']), 
-      '/workspace/tailwind.config.js'
+      Buffer.from(tailwindConfig), 
+      '/workspace/tailwind.config.ts'
     )
     
     await sandbox.fs.uploadFile(
@@ -160,6 +165,8 @@ export class ViteHandler {
     await sandbox.fs.createFolder('/workspace/src', '755')
     await sandbox.fs.createFolder('/workspace/src/components', '755')
     await sandbox.fs.createFolder('/workspace/src/components/ui', '755')
+    await sandbox.fs.createFolder('/workspace/src/components/lib', '755')
+    await sandbox.fs.createFolder('/workspace/src/pages', '755')
     await sandbox.fs.createFolder('/workspace/src/lib', '755')
     await sandbox.fs.createFolder('/workspace/src/hooks', '755')
     await sandbox.fs.createFolder('/workspace/src/types', '755')
@@ -212,6 +219,57 @@ export class ViteHandler {
         '/workspace/src/hooks/use-toast.ts'
       )
     }
+
+    // Upload default pages so the landing view is never empty
+    const pageFiles = Object.keys(templateFiles).filter(path => path.startsWith('src/pages/'))
+    for (const filePath of pageFiles) {
+      const relativePath = filePath.replace('src/', '')
+      await sandbox.fs.uploadFile(
+        Buffer.from(templateFiles[filePath]),
+        `/workspace/src/${relativePath}`
+      )
+    }
+
+    // Detect which non-UI components are actually imported by template pages/App
+    const filesToScan = ['src/App.tsx', ...pageFiles]
+    const componentImportRegex = /from\s+['"]@\/components\/([^'"]+)['"]/g
+    const requiredComponentPaths = new Set<string>()
+
+    for (const filePath of filesToScan) {
+      const content = templateFiles[filePath]
+      if (!content) continue
+
+      let match: RegExpExecArray | null
+      while ((match = componentImportRegex.exec(content)) !== null) {
+        const importPath = match[1]
+        if (importPath.startsWith('ui/')) {
+          // UI components handled separately below
+          continue
+        }
+        requiredComponentPaths.add(importPath)
+      }
+    }
+
+    for (const importPath of Array.from(requiredComponentPaths)) {
+      const candidates = [
+        `src/components/${importPath}.tsx`,
+        `src/components/${importPath}.ts`,
+        `src/components/${importPath}/index.tsx`,
+        `src/components/${importPath}/index.ts`
+      ]
+
+      const resolved = candidates.find(candidate => Boolean(templateFiles[candidate]))
+      if (!resolved) {
+        console.warn(`⚠️ Template component not found for import ${importPath}`)
+        continue
+      }
+
+      const relativePath = resolved.replace('src/', '')
+      await sandbox.fs.uploadFile(
+        Buffer.from(templateFiles[resolved]!),
+        `/workspace/src/${relativePath}`
+      )
+    }
     
     // DO NOT create lib folder - AI will create components inline
     // Upload all UI components (shadcn/ui - these are always needed)
@@ -227,8 +285,7 @@ export class ViteHandler {
       )
     }
     
-    // Library components will be uploaded later via uploadUsedLibraryComponents()
-    // after we analyze which ones are actually imported in generated files
+    // Additional library components will be uploaded later via uploadUsedLibraryComponents()
   }
 
   /**

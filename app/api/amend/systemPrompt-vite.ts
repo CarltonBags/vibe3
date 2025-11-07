@@ -151,6 +151,8 @@ export function Header() {
    - Use path alias @/ for imports (e.g., @/components/ui/button)
    - Use cn() from "@/lib/utils" for className merging
    - Custom business components (FeatureCard, PricingCard, etc.) should USE shadcn/ui components internally
+   - You may pass props to custom components ONLY if the props are declared in that component's file. Do not invent props that are not part of the component's type/interface.
+   - Never import or use a dependency that is not already listed in package.json. If you need a new dependency, add it to package.json (dependencies/devDependencies) during the amendment and ensure it installs. Do not reference packages that are missing from package.json.
 
 11. **Icons - Use Lucide React**: 
    - The project uses Lucide React icons, NOT FontAwesome

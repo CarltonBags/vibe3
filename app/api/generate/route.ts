@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { OpenAI } from 'openai';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { supabaseAdmin } from '@/lib/supabase';
@@ -28,6 +29,137 @@ const openai = new OpenAI({
 const gemini = new GoogleGenAI({
   apiKey: process.env.GEMINI_KEY
 });
+
+async function materializeRemoteImages(content: string, sandbox: any, requestId: string): Promise<string> {
+  if (!content || !content.includes('<img')) {
+    return content;
+  }
+
+  const remoteImgRegex = /<img[^>]*src=["'](https?:[^"']+)["'][^>]*>/gi;
+  const matches = Array.from(content.matchAll(remoteImgRegex));
+  if (matches.length === 0) {
+    return content;
+  }
+
+  try {
+    await sandbox.fs.createFolder('/workspace/public/generated-images', '755');
+  } catch (error) {
+    // Folder might already exist; ignore
+  }
+
+  let updatedContent = content;
+  const replacements = new Map<string, string>();
+  const gradients = [
+    ['#5A31F4', '#FF2D92'],
+    ['#2563eb', '#22d3ee'],
+    ['#7f5cf3', '#f97316'],
+    ['#1f2937', '#0ea5e9'],
+    ['#9333ea', '#facc15']
+  ];
+
+  const fetchRemoteImage = async (url: string) => {
+    try {
+      const response = await fetch(url, { redirect: 'follow' });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.startsWith('image/')) {
+        throw new Error(`Unsupported content type: ${contentType}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      const byteLength = arrayBuffer.byteLength;
+      // Limit to ~8MB to avoid massive downloads
+      if (byteLength > 8 * 1024 * 1024) {
+        throw new Error(`Image too large: ${byteLength} bytes`);
+      }
+      const extensionMap: Record<string, string> = {
+        'image/png': 'png',
+        'image/jpeg': 'jpg',
+        'image/jpg': 'jpg',
+        'image/webp': 'webp',
+        'image/gif': 'gif',
+        'image/svg+xml': 'svg',
+        'image/avif': 'avif'
+      };
+      const ext = extensionMap[contentType] || 'png';
+      return {
+        buffer: Buffer.from(arrayBuffer),
+        extension: ext
+      };
+    } catch (err) {
+      console.warn(`[generate:${requestId}] Failed to fetch remote image ${url}:`, err);
+      return null;
+    }
+  };
+
+  for (const match of matches) {
+    const fullTag = match[0];
+    const src = match[1];
+    if (replacements.has(src)) {
+      const replacement = replacements.get(src)!;
+      updatedContent = updatedContent.replace(new RegExp(src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), replacement);
+      continue;
+    }
+
+    const tagAltMatch = fullTag.match(/alt=["']([^"']*)["']/i);
+    const altText = (tagAltMatch?.[1] || 'Generated visual').slice(0, 80);
+    const sanitizedAlt = altText.replace(/[<>&]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[ch] || ch));
+
+    let newSrc: string | null = null;
+
+    try {
+      newSrc = await generateImageAsset(sanitizedAlt, sandbox, requestId);
+      console.log(`[generate:${requestId}] Generated AI image for ${src} -> ${newSrc}`);
+    } catch (generationError: any) {
+      console.warn(`[generate:${requestId}] AI image generation failed for ${src}:`, generationError?.message || generationError);
+      const fetched = await fetchRemoteImage(src);
+      if (fetched) {
+        const fileName = `generated-images/${crypto.randomUUID()}.${fetched.extension}`;
+        await sandbox.fs.uploadFile(fetched.buffer, `/workspace/public/${fileName}`);
+        newSrc = `/${fileName}`;
+        console.log(`[generate:${requestId}] Downloaded remote image ${src} -> ${newSrc}`);
+      } else {
+        const [startColor, endColor] = gradients[Math.floor(Math.random() * gradients.length)];
+        const gradientId = `grad_${crypto.randomUUID().replace(/-/g, '')}`;
+        const fallbackFile = `generated-images/${crypto.randomUUID()}.svg`;
+        const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">\n  <defs>\n    <linearGradient id="${gradientId}" x1="0%" y1="0%" x2="100%" y2="100%">\n      <stop offset="0%" stop-color="${startColor}"/>\n      <stop offset="100%" stop-color="${endColor}"/>\n    </linearGradient>\n  </defs>\n  <rect width="1600" height="900" fill="url(#${gradientId})"/>\n  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="'Inter', sans-serif" font-size="72" fill="rgba(255,255,255,0.85)">${sanitizedAlt}</text>\n</svg>`;
+        await sandbox.fs.uploadFile(Buffer.from(svg, 'utf-8'), `/workspace/public/${fallbackFile}`);
+        newSrc = `/${fallbackFile}`;
+        console.log(`[generate:${requestId}] Generated fallback SVG for ${src} -> ${newSrc}`);
+      }
+    }
+
+    replacements.set(src, newSrc);
+    updatedContent = updatedContent.replace(new RegExp(src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), newSrc);
+  }
+
+  return updatedContent;
+}
+
+async function generateImageAsset(description: string, sandbox: any, requestId: string): Promise<string> {
+  const prompt = description && description.trim().length > 0
+    ? `Create a high fidelity cinematic web hero illustration representing: ${description}`
+    : 'Create a high fidelity cinematic web hero illustration with neon gradients and futuristic interface elements';
+
+  const response = await openai.images.generate({
+    model: 'gpt-image-1',
+    prompt,
+    size: '1024x1024',
+    response_format: 'b64_json',
+  });
+
+  const base64 = response.data?.[0]?.b64_json;
+  if (!base64) {
+    throw new Error('No image data returned from OpenAI image generation');
+  }
+
+  const buffer = Buffer.from(base64, 'base64');
+  const fileName = `generated-images/${crypto.randomUUID()}.png`;
+  await sandbox.fs.uploadFile(buffer, `/workspace/public/${fileName}`);
+  console.log(`[generate:${requestId}] Saved AI generated image ${fileName}`);
+  return `/${fileName}`;
+}
 
 export async function POST(req: Request) {
   const startTime = Date.now();
@@ -1050,6 +1182,10 @@ export default App;
         
         // Note: Vite doesn't need 'use client' directive like Next.js
         // React components in Vite are client-side by default
+        
+        if (fullPath.endsWith('.tsx') || fullPath.endsWith('.jsx') || fullPath.endsWith('.html')) {
+          content = await materializeRemoteImages(content, sandbox, requestId);
+        }
         
         // Fix unreliable placeholder image URLs
         if (content.includes('via.placeholder.com') || content.includes('placeholder.com') || content.includes('lorempixel.com')) {

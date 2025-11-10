@@ -115,6 +115,8 @@ export async function updateProject(
     build_hash?: string
     build_version?: number
     storage_path?: string
+    name?: string
+    description?: string
   }
 ) {
   const { data, error } = await supabaseAdmin

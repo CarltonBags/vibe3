@@ -10,7 +10,7 @@ export class ViteHandler {
     name: 'Vite + React + TypeScript',
     description: 'Fast React development with Vite, TypeScript, and Tailwind CSS',
     templatePath: 'templates/vite',
-    systemPromptPath: 'app/api/generate/systemPrompt-vite.ts',
+    systemPromptPath: 'app/api/chat/systemPrompt.ts',
     buildCommand: 'npm run build',
     devCommand: 'npm run dev',
     buildDir: 'dist'

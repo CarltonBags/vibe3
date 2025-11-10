@@ -5,6 +5,7 @@
 
 import path from 'path';
 import crypto from 'crypto';
+import { promises as fs } from 'fs';
 import { Daytona } from '@daytonaio/sdk';
 import { supabaseAdmin } from '@/lib/supabase';
 import { getProjectFiles } from '@/lib/db';
@@ -62,7 +63,7 @@ export async function getOrCreateSandbox(
   const sandbox = await daytona.create({
     image: 'node:20-alpine',
     public: true,
-    ephemeral: true,
+    //ephemeral: true,
   });
 
   // Update project with sandbox ID
@@ -313,11 +314,22 @@ export async function toolLineReplace(
     // Extract the section to replace (1-indexed to 0-indexed)
     const sectionToReplace = lines.slice(firstLine - 1, lastLine).join('\n');
 
-    // Validate search matches
-    if (!sectionToReplace.includes(search.replace(/\n/g, '\n'))) {
+    if (!sectionToReplace.includes(search)) {
+      const replacementLines = replace.split('\n');
+      const newLines = [
+        ...lines.slice(0, firstLine - 1),
+        ...replacementLines,
+        ...lines.slice(lastLine),
+      ];
+
+      await context.sandbox.fs.uploadFile(
+        Buffer.from(newLines.join('\n')),
+        fullPath
+      );
+
       return {
-        success: false,
-        error: `Search pattern does not match content at lines ${firstLine}-${lastLine}`,
+        success: true,
+        message: `Replaced lines ${firstLine}-${lastLine} in ${filePath} (fallback range replace)`,
       };
     }
 
@@ -1149,12 +1161,9 @@ async function normalizeComponentDuplicates(context: ToolContext): Promise<void>
     for (const [baseName, files] of Array.from(groups.entries())) {
       if (files.length < 2) continue;
 
-      // Determine canonical file preference: template lib components first
-      let canonical = files[0];
+      // Determine canonical file preference: prefer non-lib implementations
+      let canonical = files.find((file) => !file.path.includes('src/components/lib/')) || files[0];
       const libCandidate = files.find((file) => file.path.includes('src/components/lib/'));
-      if (libCandidate) {
-        canonical = libCandidate;
-      }
 
       const appImportCandidates = appImportsByBase.get(baseName) || [];
       if (appImportCandidates.length > 0) {
@@ -1168,7 +1177,7 @@ async function normalizeComponentDuplicates(context: ToolContext): Promise<void>
         }
       }
 
-      if (appImportCandidates.length === 0 && !libCandidate) {
+      if (appImportCandidates.length === 0) {
         canonical = files.reduce((best, current) => {
           return scoreDuplicateCandidate(current.path, current.name) > scoreDuplicateCandidate(best.path, best.name) ? current : best;
         }, canonical);
@@ -1179,7 +1188,7 @@ async function normalizeComponentDuplicates(context: ToolContext): Promise<void>
 
         try {
           if (file.path.includes('src/components/lib/')) {
-            // Never overwrite canonical template components
+            // Reference library components remain untouched
             continue;
           }
           const fromDir = path.dirname(file.path);
@@ -1199,13 +1208,98 @@ async function normalizeComponentDuplicates(context: ToolContext): Promise<void>
   }
 }
 
+function extractNamedExportsFromContent(content: string): Set<string> {
+  const names = new Set<string>();
+  const regexes = [
+    /export\s+(?:function|const|class)\s+([A-Za-z0-9_]+)/g,
+    /export\s*{\s*([^}]+)\s*}/g,
+  ];
+
+  for (const regex of regexes) {
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(content)) !== null) {
+      if (regex === regexes[1]) {
+        const parts = match[1]
+          .split(',')
+          .map((part) => part.trim().split(' as ')[0].trim())
+          .filter(Boolean);
+        parts.forEach((name) => names.add(name));
+      } else {
+        names.add(match[1]);
+      }
+    }
+  }
+
+  return names;
+}
+
+function isComponentImportPath(importPath: string): boolean {
+  return (
+    importPath.startsWith('@/components') ||
+    importPath.startsWith('@/pages') ||
+    importPath.startsWith('./components') ||
+    importPath.startsWith('../components')
+  );
+}
+
+function parseSimpleImportSpecifier(specifiers: string): { type: 'default' | 'named'; name: string } | null {
+  const trimmed = specifiers.trim();
+  const defaultMatch = trimmed.match(/^([A-Za-z0-9_]+)$/);
+  if (defaultMatch) {
+    return { type: 'default', name: defaultMatch[1] };
+  }
+
+  const namedMatch = trimmed.match(/^\{\s*([A-Za-z0-9_]+)\s*\}$/);
+  if (namedMatch) {
+    return { type: 'named', name: namedMatch[1] };
+  }
+
+  return null;
+}
+
+async function resolveImportToFile(context: ToolContext, importPath: string): Promise<string | null> {
+  const candidates: string[] = [];
+  const suffixes = ['.tsx', '.ts', '.jsx', '.js', '/index.tsx', '/index.ts', '/index.jsx', '/index.js'];
+
+  if (importPath.startsWith('@/')) {
+    const relative = importPath.slice(2);
+    const base = `/workspace/src/${relative}`;
+    for (const suffix of suffixes) {
+      candidates.push(`${base}${suffix}`);
+    }
+  } else if (importPath.startsWith('./') || importPath.startsWith('../')) {
+    const base = path.resolve('/workspace/src', importPath);
+    for (const suffix of suffixes) {
+      candidates.push(`${base}${suffix}`);
+    }
+  } else {
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    try {
+      await context.sandbox?.fs.downloadFile(candidate);
+      return candidate;
+    } catch {
+      // try next
+    }
+  }
+
+  return null;
+}
+
 async function enforceCanonicalComponentImports(context: ToolContext): Promise<void> {
   if (!context.sandbox) return;
 
-  const canonicalImports: Array<{ name: string; importPath: string }> = [
-    { name: 'Header', importPath: "@/components/lib/Header" },
-    { name: 'Footer', importPath: "@/components/lib/Footer" },
-    { name: 'Hero', importPath: "@/components/lib/Hero" },
+  const canonicalImports: Array<{
+    name: string;
+    importPath: string;
+    legacyPaths: string[];
+    importStyle: 'default' | 'named';
+  }> = [
+    { name: 'Header', importPath: "@/components/Header", legacyPaths: ["@/components/lib/Header", "@/components/lib/header"], importStyle: 'default' },
+    { name: 'Footer', importPath: "@/components/Footer", legacyPaths: ["@/components/lib/Footer", "@/components/lib/footer"], importStyle: 'default' },
+    { name: 'Hero', importPath: "@/components/Hero", legacyPaths: ["@/components/lib/Hero", "@/components/lib/hero"], importStyle: 'default' },
   ];
 
   const filesToCheck = ['/workspace/src/App.tsx'];
@@ -1217,17 +1311,60 @@ async function enforceCanonicalComponentImports(context: ToolContext): Promise<v
       let updated = false;
 
       for (const canonical of canonicalImports) {
+        let desiredStyle = canonical.importStyle;
+        try {
+          const relPath = canonical.importPath.startsWith('@/') ? canonical.importPath.replace('@/', 'src/') : canonical.importPath;
+          const candidatePaths = [`/workspace/${relPath}.tsx`, `/workspace/${relPath}/index.tsx`];
+          for (const candidate of candidatePaths) {
+            try {
+              const fileBuffer = await context.sandbox.fs.downloadFile(candidate);
+              const fileContent = fileBuffer.toString('utf-8');
+              if (/\bexport\s+default\b/.test(fileContent)) {
+                desiredStyle = 'default';
+              } else if (new RegExp(`\\bexport\\s+(function|const|class)\\s+${canonical.name}\\b`).test(fileContent)) {
+                desiredStyle = 'named';
+              }
+              break;
+            } catch {
+              // try next candidate
+            }
+          }
+        } catch {
+          // fallback to configured style
+        }
+
+        const allowedPaths = new Set([canonical.importPath, ...canonical.legacyPaths]);
         const namedImportRegex = new RegExp(`import\\s+\\{\\s*${canonical.name}\\s*\\}\\s+from\\s+['\"]([^'\"]+)['\"];?`, 'g');
         const defaultImportRegex = new RegExp(`import\\s+${canonical.name}\\s+from\\s+['\"]([^'\"]+)['\"];?`, 'g');
 
         content = content.replace(namedImportRegex, (match: string, importPath: string) => {
-          if (importPath === canonical.importPath) return match;
+          if (!allowedPaths.has(importPath)) {
+            return match;
+          }
+
+          if (desiredStyle === 'named') {
+            if (importPath === canonical.importPath) return match;
+            updated = true;
+            return `import { ${canonical.name} } from '${canonical.importPath}';`;
+          }
+
+          // Convert named import to default import
           updated = true;
-          return `import { ${canonical.name} } from '${canonical.importPath}';`;
+          return `import ${canonical.name} from '${canonical.importPath}';`;
         });
 
         content = content.replace(defaultImportRegex, (match: string, importPath: string) => {
-          if (importPath === canonical.importPath) return match;
+          if (!allowedPaths.has(importPath)) {
+            return match;
+          }
+
+          if (desiredStyle === 'default') {
+            if (importPath === canonical.importPath) return match;
+            updated = true;
+            return `import ${canonical.name} from '${canonical.importPath}';`;
+          }
+
+          // Convert default import to named import
           updated = true;
           return `import { ${canonical.name} } from '${canonical.importPath}';`;
         });
@@ -1240,6 +1377,77 @@ async function enforceCanonicalComponentImports(context: ToolContext): Promise<v
     } catch (error) {
       // ignore missing files or read errors
     }
+  }
+}
+
+async function ensureComponentImportStyles(context: ToolContext): Promise<void> {
+  if (!context.sandbox) return;
+  const appPath = '/workspace/src/App.tsx';
+
+  let appContent: string;
+  try {
+    appContent = (await context.sandbox.fs.downloadFile(appPath)).toString('utf-8');
+  } catch {
+    return;
+  }
+
+  const importRegex = /import\s+([^;]+?)\s+from\s+['"]([^'"]+)['"];?/g;
+  const matches: Array<{ full: string; specifiers: string; importPath: string }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = importRegex.exec(appContent)) !== null) {
+    matches.push({
+      full: match[0],
+      specifiers: match[1].trim(),
+      importPath: match[2].trim(),
+    });
+  }
+
+  const replacements: Array<{ original: string; replacement: string }> = [];
+
+  for (const { full, specifiers, importPath } of matches) {
+    if (!isComponentImportPath(importPath)) continue;
+
+    const specInfo = parseSimpleImportSpecifier(specifiers);
+    if (!specInfo) continue;
+
+    const resolvedPath = await resolveImportToFile(context, importPath);
+    if (!resolvedPath) continue;
+
+    let fileContent: string;
+    try {
+      fileContent = (await context.sandbox.fs.downloadFile(resolvedPath)).toString('utf-8');
+    } catch {
+      continue;
+    }
+
+    const hasDefault = /\bexport\s+default\b/.test(fileContent);
+    const namedExports = extractNamedExportsFromContent(fileContent);
+
+    if (specInfo.type === 'named') {
+      if (hasDefault && !namedExports.has(specInfo.name)) {
+        replacements.push({
+          original: full,
+          replacement: `import ${specInfo.name} from '${importPath}';`,
+        });
+      }
+    } else if (specInfo.type === 'default') {
+      if (!hasDefault && namedExports.has(specInfo.name)) {
+        replacements.push({
+          original: full,
+          replacement: `import { ${specInfo.name} } from '${importPath}';`,
+        });
+      }
+    }
+  }
+
+  if (replacements.length > 0) {
+    let updatedContent = appContent;
+    for (const { original, replacement } of replacements) {
+      updatedContent = updatedContent.replace(original, replacement);
+    }
+    await context.sandbox.fs.uploadFile(Buffer.from(updatedContent, 'utf-8'), appPath);
+    console.log(`✅ Normalized component import styles in App.tsx (${replacements.length} adjustment(s))`);
   }
 }
 
@@ -2087,7 +2295,52 @@ async function autoFixConfigErrors(context: ToolContext, errorOutput: string): P
     }
   }
 
+  // Fix CSS parse errors (e.g., [vite:css] [postcss] Unexpected token)
+  if (errorOutput.includes('[vite:css]')) {
+    const cssFileMatch = errorOutput.match(/file:\s*(\/workspace\/[^\s:]+)/);
+    if (cssFileMatch) {
+      const workspacePath = cssFileMatch[1].trim();
+      const restored = await restoreCssFileFromTemplate(context, workspacePath);
+      if (restored) {
+        fixed = true;
+      } else {
+        // Fall back to AI-based fix if we can't restore from template
+        const cssAIFix = await aiBasedAutoFix(context, `${errorOutput}\n\nPlease fix the CSS parse error, ensuring valid syntax.`);
+        if (cssAIFix) {
+          console.log('✅ AI attempted to fix CSS parse error');
+          fixed = true;
+        }
+      }
+    }
+  }
+
   return fixed;
+}
+
+async function restoreCssFileFromTemplate(context: ToolContext, workspacePath: string): Promise<boolean> {
+  try {
+    if (!workspacePath.startsWith('/workspace/')) {
+      console.warn(`⚠️ Cannot restore CSS for unexpected path: ${workspacePath}`);
+      return false;
+    }
+
+    const relativePath = workspacePath.replace('/workspace/', '');
+    const templateRoot = path.join(process.cwd(), 'templates', 'vite');
+    const templatePath = path.join(templateRoot, relativePath);
+
+    const templateContent = await fs.readFile(templatePath, 'utf-8').catch(() => null);
+    if (!templateContent) {
+      console.warn(`⚠️ No template found to restore CSS file: ${relativePath}`);
+      return false;
+    }
+
+    await context.sandbox?.fs.uploadFile(Buffer.from(templateContent, 'utf-8'), `/workspace/${relativePath}`);
+    console.log(`✅ Restored ${relativePath} from template due to CSS parse error`);
+    return true;
+  } catch (error: any) {
+    console.warn(`⚠️ Failed to restore CSS file from template (${workspacePath}):`, error.message);
+    return false;
+  }
 }
 
 /**
@@ -2095,82 +2348,44 @@ async function autoFixConfigErrors(context: ToolContext, errorOutput: string): P
  */
 async function validateAndFixPackageJson(context: ToolContext): Promise<boolean> {
   if (!context.sandbox) return false;
-  
   try {
     const packageJsonContent = await context.sandbox.fs.downloadFile('/workspace/package.json');
     let content = packageJsonContent.toString('utf-8');
-    
-    // Try to parse it
-    try {
-      JSON.parse(content);
-      // Valid JSON, no fix needed
-      return false;
-    } catch (parseError: any) {
-      console.log(`⚠️ package.json is malformed: ${parseError.message}`);
-      
-      // Common fixes:
-      // 1. Remove duplicate closing braces
-      content = content.replace(/\}\s*\}+/g, '}');
-      
-      // 2. Remove trailing commas before closing braces/brackets
-      content = content.replace(/,(\s*[}\]])/g, '$1');
-      
-      // 3. Fix duplicate dependencies entries (merge them)
-      // Try to extract valid JSON structure by finding the last valid closing brace
-      const lastValidBrace = content.lastIndexOf('}');
-      if (lastValidBrace > 0) {
-        // Check if there's extra content after the last brace
-        const afterLastBrace = content.substring(lastValidBrace + 1).trim();
-        if (afterLastBrace && (afterLastBrace.startsWith('}') || afterLastBrace.startsWith('}}'))) {
-          // Remove extra closing braces
-          content = content.substring(0, lastValidBrace + 1);
-        }
-      }
-      
-      // 4. Try to parse again
+    let mutated = false;
+
+    const tryParse = (json: string): any | null => {
       try {
-        const fixed = JSON.parse(content);
-        
-        // Validate structure
-        if (typeof fixed !== 'object' || Array.isArray(fixed)) {
-          throw new Error('package.json must be an object');
+        return JSON.parse(json);
+      } catch {
+        return null;
+      }
+    };
+
+    let parsed = tryParse(content);
+
+    if (!parsed) {
+      try {
+        const firstParseAttempt = JSON.parse(content);
+        parsed = firstParseAttempt;
+      } catch (parseError: any) {
+        console.log(`⚠️ package.json is malformed: ${parseError.message}`);
+
+        // Attempt automatic clean-up
+        content = content.replace(/\}\s*\}+/g, '}');
+        content = content.replace(/,(\s*[}\]])/g, '$1');
+        const lastValidBrace = content.lastIndexOf('}');
+        if (lastValidBrace > 0) {
+          const afterLastBrace = content.substring(lastValidBrace + 1).trim();
+          if (afterLastBrace && (afterLastBrace.startsWith('}') || afterLastBrace.startsWith('}}'))) {
+            content = content.substring(0, lastValidBrace + 1);
+          }
         }
-        
-        // Ensure required fields exist
-        if (!fixed.name) fixed.name = 'vibe-app';
-        if (!fixed.version) fixed.version = '0.1.0';
-        if (!fixed.dependencies) fixed.dependencies = {};
-        if (!fixed.devDependencies) fixed.devDependencies = {};
-        
-        // Sort dependencies alphabetically for consistency
-        const sortedDeps = Object.keys(fixed.dependencies).sort().reduce((acc: any, key: string) => {
-          acc[key] = fixed.dependencies[key];
-          return acc;
-        }, {});
-        fixed.dependencies = sortedDeps;
-        
-        const sortedDevDeps = Object.keys(fixed.devDependencies).sort().reduce((acc: any, key: string) => {
-          acc[key] = fixed.devDependencies[key];
-          return acc;
-        }, {});
-        fixed.devDependencies = sortedDevDeps;
-        
-        // Write fixed version
-        const fixedContent = JSON.stringify(fixed, null, 2);
-        await context.sandbox.fs.uploadFile(Buffer.from(fixedContent), '/workspace/package.json');
-        
-        // Verify it's valid
-        const verify = await context.sandbox.fs.downloadFile('/workspace/package.json');
-        JSON.parse(verify.toString('utf-8'));
-        
-        console.log('✅ Successfully fixed malformed package.json');
-        return true;
-      } catch (secondParseError: any) {
-        console.error(`❌ Could not fix package.json: ${secondParseError.message}`);
-        
-        // Last resort: restore from template if available
-        try {
-          // Try to restore a minimal valid package.json
+
+        parsed = tryParse(content);
+        if (parsed) {
+          mutated = true;
+        } else {
+          // Last resort minimal package.json
           const minimalPackageJson = {
             name: 'vibe-app',
             version: '0.1.0',
@@ -2182,41 +2397,109 @@ async function validateAndFixPackageJson(context: ToolContext): Promise<boolean>
             },
             dependencies: {},
             devDependencies: {}
-          };
-          
-          // Try to preserve existing dependencies if we can extract them
+          } as any;
+          // best-effort dependency extraction
           try {
             const existingMatch = content.match(/"dependencies"\s*:\s*\{([^}]*)\}/);
             if (existingMatch) {
-              // Try to extract dependency entries
-              const depsMatch = existingMatch[1].match(/"([^"]+)":\s*"([^"]+)"/g);
+              const depsMatch = existingMatch[1].match(/"([^\"]+)"\s*:\s*"([^\"]+)"/g);
               if (depsMatch) {
                 depsMatch.forEach((dep: string) => {
-                  const depMatch = dep.match(/"([^"]+)":\s*"([^"]+)"/);
+                  const depMatch = dep.match(/"([^\"]+)"\s*:\s*"([^\"]+)"/);
                   if (depMatch && depMatch[1] && depMatch[2]) {
-                    (minimalPackageJson.dependencies as Record<string, string>)[depMatch[1]] = depMatch[2];
+                    minimalPackageJson.dependencies[depMatch[1]] = depMatch[2];
                   }
                 });
               }
             }
-          } catch (e) {
-            // Ignore extraction errors
+          } catch {
+            // ignore extraction issues
           }
-          
-          await context.sandbox.fs.uploadFile(
-            Buffer.from(JSON.stringify(minimalPackageJson, null, 2)),
-            '/workspace/package.json'
-          );
-          console.log('⚠️ Restored minimal package.json (dependencies may need to be re-added)');
-          return true;
-        } catch (restoreError: any) {
-          console.error(`❌ Could not restore package.json: ${restoreError.message}`);
-          return false;
+          parsed = minimalPackageJson;
+          mutated = true;
+          console.log('⚠️ Restored minimal package.json (dependencies may need review)');
         }
       }
     }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      console.error('❌ package.json could not be interpreted as an object');
+      return mutated;
+    }
+
+    parsed.name = parsed.name || 'vibe-app';
+    parsed.version = parsed.version || '0.1.0';
+    parsed.dependencies = parsed.dependencies || {};
+    parsed.devDependencies = parsed.devDependencies || {};
+    parsed.scripts = parsed.scripts || {};
+
+    const scriptValues = Object.values(parsed.scripts) as Array<string>;
+    const requiresPatchPackage = scriptValues.some((value) => typeof value === 'string' && value.includes('patch-package'));
+    const hasPatchPackage = Boolean(
+      (parsed.dependencies && parsed.dependencies['patch-package']) ||
+      (parsed.devDependencies && parsed.devDependencies['patch-package'])
+    );
+
+    if (requiresPatchPackage && !hasPatchPackage) {
+      parsed.devDependencies['patch-package'] = '^6.5.1';
+      mutated = true;
+      console.log('✅ Added patch-package to devDependencies to satisfy postinstall script');
+    }
+
+    const sortObject = (obj: Record<string, string>) =>
+      Object.keys(obj)
+        .sort()
+        .reduce((acc: Record<string, string>, key: string) => {
+          acc[key] = obj[key];
+          return acc;
+        }, {} as Record<string, string>);
+
+    const sortedDependencies = sortObject(parsed.dependencies);
+    if (JSON.stringify(sortedDependencies) !== JSON.stringify(parsed.dependencies)) {
+      parsed.dependencies = sortedDependencies;
+      mutated = true;
+    }
+
+    const sortedDevDependencies = sortObject(parsed.devDependencies);
+    if (JSON.stringify(sortedDevDependencies) !== JSON.stringify(parsed.devDependencies)) {
+      parsed.devDependencies = sortedDevDependencies;
+      mutated = true;
+    }
+
+    if (mutated) {
+      const fixedContent = JSON.stringify(parsed, null, 2);
+      await context.sandbox.fs.uploadFile(Buffer.from(fixedContent), '/workspace/package.json');
+      console.log('✅ Updated package.json with required fixes');
+      return true;
+    }
+
+    return false;
   } catch (error: any) {
     console.error(`❌ Error validating package.json: ${error.message}`);
+    return false;
+  }
+}
+
+async function installMissingBinary(context: ToolContext, command: string): Promise<boolean> {
+  if (!context.sandbox) return false;
+  const sanitized = command.trim();
+  if (!sanitized || sanitized.includes('/') || sanitized.includes('\n') || sanitized.includes(' ')) {
+    return false;
+  }
+
+  try {
+    console.log(`⚙️ Attempting to install missing binary '${sanitized}' as devDependency...`);
+    const installResult = await context.sandbox.process.executeCommand(
+      `cd /workspace && npm install --save-dev ${sanitized}`
+    );
+    if (installResult.exitCode === 0) {
+      console.log(`✅ Installed ${sanitized} as devDependency`);
+      return true;
+    }
+    console.warn(`⚠️ Failed to install ${sanitized}: ${installResult.result}`);
+    return false;
+  } catch (error: any) {
+    console.warn(`⚠️ Error installing ${sanitized}:`, error.message);
     return false;
   }
 }
@@ -3363,23 +3646,55 @@ export async function buildAndUploadProject(
       'cd /workspace && npm install'
     );
     if (installResult.exitCode !== 0) {
-      // Try to fix package.json if installation fails due to JSON parse error
-      if (installResult.result.includes('JSON.parse') || installResult.result.includes('EJSONPARSE')) {
-        console.log('⚠️ package.json parse error detected, attempting to fix...');
-        const fixed = await validateAndFixPackageJson(context);
-        if (fixed) {
-          console.log('✅ Fixed package.json, retrying installation...');
-          const retryResult = await context.sandbox.process.executeCommand(
+      let currentResult = installResult;
+      let installFixed = false;
+      const missingBinaries = new Set<string>();
+      const binaryMatches = currentResult.result.match(/sh:\s*([^:]+):\s*not found/g);
+      if (binaryMatches) {
+        binaryMatches.forEach((line: string) => {
+          const match = line.match(/sh:\s*([^:]+):\s*not found/);
+          if (match && match[1]) {
+            missingBinaries.add(match[1]);
+          }
+        });
+      }
+      const commandMatch = currentResult.result.match(/command\s+failed\s*[\s\S]*?sh\s+-c\s+([^\s]+)/);
+      if (commandMatch && commandMatch[1]) {
+        missingBinaries.add(commandMatch[1]);
+      }
+
+      if (missingBinaries.size > 0) {
+        console.log(`⚠️ Missing script binaries detected: ${Array.from(missingBinaries).join(', ')}`);
+        for (const bin of Array.from(missingBinaries)) {
+          const installed = await installMissingBinary(context, bin);
+          installFixed = installFixed || installed;
+        }
+        if (installFixed) {
+          console.log('🔁 Retrying dependency installation after installing missing binaries...');
+          currentResult = await context.sandbox.process.executeCommand(
             'cd /workspace && npm install'
           );
-          if (retryResult.exitCode !== 0) {
-            throw new Error(`Dependency installation failed after fix: ${retryResult.result}`);
+        }
+      }
+
+      if (currentResult.exitCode !== 0) {
+        if (currentResult.result.includes('JSON.parse') || currentResult.result.includes('EJSONPARSE')) {
+          console.log('⚠️ package.json parse error detected, attempting to fix...');
+          const fixed = await validateAndFixPackageJson(context);
+          if (fixed) {
+            console.log('✅ Fixed package.json, retrying installation...');
+            const retryResult = await context.sandbox.process.executeCommand(
+              'cd /workspace && npm install'
+            );
+            if (retryResult.exitCode !== 0) {
+              throw new Error(`Dependency installation failed after fix: ${retryResult.result}`);
+            }
+          } else {
+            throw new Error(`Dependency installation failed: ${currentResult.result}`);
           }
         } else {
-          throw new Error(`Dependency installation failed: ${installResult.result}`);
+          throw new Error(`Dependency installation failed: ${currentResult.result}`);
         }
-      } else {
-        throw new Error(`Dependency installation failed: ${installResult.result}`);
       }
     }
 
@@ -3391,6 +3706,9 @@ export async function buildAndUploadProject(
 
     // Enforce canonical template component usage
     await enforceCanonicalComponentImports(context);
+
+    // Ensure import styles match component exports
+    await ensureComponentImportStyles(context);
 
     // Ensure every page has a matching route entry
     await ensurePageRoutes(context);
@@ -3412,7 +3730,19 @@ export async function buildAndUploadProject(
     if (preCompileResult.fixed) {
       console.log('✅ All source files compiled successfully');
     } else if (preCompileResult.errors.length > 0) {
-      console.warn(`⚠️ Pre-compilation found ${preCompileResult.errors.length} error(s), but continuing to full build...`);
+      console.warn(`⚠️ Pre-compilation found ${preCompileResult.errors.length} error(s). Attempting fixes...`);
+      const preCompileErrorText = preCompileResult.errors.join('\n');
+      await autoFixTypeScriptErrors(context, preCompileErrorText);
+      const aiPreCompileFix = await aiBasedAutoFix(context, preCompileErrorText);
+      if (aiPreCompileFix) {
+        console.log('✅ AI fixes applied after pre-compilation errors');
+      }
+      const preCompileRetry = await preCompileSourceFiles(context);
+      if (!preCompileRetry.fixed) {
+        console.error('❌ Pre-compilation errors remain after fixes:', preCompileRetry.errors);
+        throw new Error(`Pre-compilation failed: ${preCompileRetry.errors.join('\n')}`);
+      }
+      console.log('✅ Pre-compilation passed after fixes');
     }
 
     // Validate imports before building
@@ -3432,15 +3762,20 @@ export async function buildAndUploadProject(
       'cd /workspace && npx tsc --noEmit'
     );
     if (tscResult.exitCode !== 0) {
-      console.warn('⚠️ TypeScript errors found:', tscResult.result);
-      // Try to auto-fix common errors
+      console.error('❌ TypeScript errors detected before build:', tscResult.result);
       await autoFixTypeScriptErrors(context, tscResult.result);
-      
-      // Also try AI-based fix if pattern-based fixes didn't work
       const aiFixed = await aiBasedAutoFix(context, tscResult.result);
       if (aiFixed) {
         console.log('✅ AI fixes applied after TypeScript check');
       }
+      const tscRetry = await context.sandbox.process.executeCommand(
+        'cd /workspace && npx tsc --noEmit'
+      );
+      if (tscRetry.exitCode !== 0) {
+        console.error('❌ TypeScript errors remain after fixes:', tscRetry.result);
+        throw new Error(`TypeScript check failed: ${tscRetry.result}`);
+      }
+      console.log('✅ TypeScript check passed after fixes');
     }
 
     // Config files already validated above, but re-validate before build

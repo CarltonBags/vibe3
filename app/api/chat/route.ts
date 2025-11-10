@@ -8,13 +8,14 @@ import { NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { GoogleGenAI } from '@google/genai';
-import { 
-  checkUserLimits, 
-  incrementUsage, 
-  createProject, 
+import {
+  checkUserLimits,
+  incrementUsage,
+  createProject,
   updateProject,
   getUserWithTier,
   getProjectFiles,
+  getProjectById,
   getConversationHistory,
   saveConversationMessages
 } from '@/lib/db';
@@ -26,6 +27,224 @@ import { convertMessagesToGemini, extractFunctionCalls, getGeminiText } from './
 const gemini = new GoogleGenAI({
   apiKey: process.env.GEMINI_KEY
 });
+
+//vreates a project name out of the user's message
+const PROJECT_NAME_STOP_WORDS = new Set([
+  'build',
+  'create',
+  'make',
+  'generate',
+  'design',
+  'produce',
+  'develop',
+  'draft',
+  'write',
+  'craft',
+  'for',
+  'with',
+  'and',
+  'the',
+  'a',
+  'an',
+  'to',
+  'my',
+  'your',
+  'our',
+  'their',
+  'this',
+  'that',
+  'project',
+  'app',
+  'application',
+  'website',
+  'site',
+  'platform',
+  'please',
+  'new',
+  'from',
+  'about',
+  'of',
+  'in',
+  'on'
+]);
+
+function titleizeWord(word: string): string {
+  if (!word) return word;
+  if (word === word.toUpperCase()) return word;
+  return word[0].toUpperCase() + word.slice(1).toLowerCase();
+}
+
+function deriveProjectName(message: string): string {
+  if (typeof message !== 'string' || message.trim().length === 0) {
+    return 'New Project';
+  }
+
+  const tokens = Array.from(message.matchAll(/\b[A-Za-z0-9]{2,}\b/g)).map((match) => match[0]);
+  if (tokens.length === 0) {
+    return 'New Project';
+  }
+
+  const filtered = tokens.filter((token) => !PROJECT_NAME_STOP_WORDS.has(token.toLowerCase()));
+  const selected = (filtered.length > 0 ? filtered : tokens).slice(0, 4);
+
+  const candidate = selected.map(titleizeWord).join(' ').trim();
+  if (!candidate) {
+    return 'New Project';
+  }
+
+  return candidate.length > 48 ? `${candidate.slice(0, 45).trim()}…` : candidate;
+}
+
+const PROJECT_METADATA_RELATIVE_PATH = 'src/project-metadata.json';
+const PROJECT_METADATA_ABSOLUTE_PATH = `/workspace/${PROJECT_METADATA_RELATIVE_PATH}`;
+
+type ProjectBrandMetadata = {
+  primaryColor: string | null;
+  secondaryColor: string | null;
+  accentColors: string[];
+  typography: string | null;
+};
+
+type ProjectMetadata = {
+  name: string;
+  prompt: string;
+  template: string | null;
+  summary: string | null;
+  tagline: string | null;
+  brand: ProjectBrandMetadata;
+  notes: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+function normalizeProjectMetadata(
+  raw: any,
+  fallbackName: string,
+  fallbackPrompt: string,
+  fallbackTemplate: string | null,
+  fallbackCreatedAt: string
+): ProjectMetadata {
+  const brand: ProjectBrandMetadata = {
+    primaryColor: typeof raw?.brand?.primaryColor === 'string' ? raw.brand.primaryColor : null,
+    secondaryColor: typeof raw?.brand?.secondaryColor === 'string' ? raw.brand.secondaryColor : null,
+    accentColors: Array.isArray(raw?.brand?.accentColors)
+      ? raw.brand.accentColors.filter((value: any) => typeof value === 'string')
+      : [],
+    typography: typeof raw?.brand?.typography === 'string' ? raw.brand.typography : null
+  };
+
+  return {
+    name: typeof raw?.name === 'string' && raw.name.trim() ? raw.name.trim() : fallbackName,
+    prompt: typeof raw?.prompt === 'string' && raw.prompt.trim() ? raw.prompt.trim() : fallbackPrompt,
+    template: typeof raw?.template === 'string' ? raw.template : fallbackTemplate,
+    summary: typeof raw?.summary === 'string' ? raw.summary : null,
+    tagline: typeof raw?.tagline === 'string' ? raw.tagline : null,
+    brand,
+    notes: Array.isArray(raw?.notes) ? raw.notes.filter((note: any) => typeof note === 'string') : [],
+    createdAt: typeof raw?.createdAt === 'string' ? raw.createdAt : fallbackCreatedAt,
+    updatedAt: typeof raw?.updatedAt === 'string' ? raw.updatedAt : fallbackCreatedAt
+  };
+}
+
+function buildProjectMetadata(
+  projectRecord: any,
+  userMessage: string,
+  template: string | null
+): { metadata: ProjectMetadata; changed: boolean } {
+  const fallbackName = projectRecord?.name || 'Untitled Project';
+  const fallbackPrompt =
+    (typeof projectRecord?.prompt === 'string' && projectRecord.prompt.trim()) ||
+    (typeof userMessage === 'string' ? userMessage.trim() : '');
+  const fallbackTemplate = template || null;
+  const fallbackCreatedAt = projectRecord?.created_at || new Date().toISOString();
+
+  let parsedMetadata: any = null;
+  if (projectRecord?.description) {
+    try {
+      parsedMetadata = JSON.parse(projectRecord.description);
+    } catch {
+      parsedMetadata = null;
+    }
+  }
+
+  let metadata = normalizeProjectMetadata(parsedMetadata, fallbackName, fallbackPrompt, fallbackTemplate, fallbackCreatedAt);
+  let changed = !parsedMetadata;
+  const now = new Date().toISOString();
+
+  if (metadata.name !== fallbackName) {
+    metadata.name = fallbackName;
+    changed = true;
+  }
+
+  if (fallbackPrompt && metadata.prompt !== fallbackPrompt) {
+    metadata.prompt = fallbackPrompt;
+    changed = true;
+  }
+
+  if (metadata.template !== fallbackTemplate) {
+    metadata.template = fallbackTemplate;
+    changed = true;
+  }
+
+  if (!metadata.createdAt) {
+    metadata.createdAt = fallbackCreatedAt;
+    changed = true;
+  }
+
+  if (changed) {
+    metadata.updatedAt = now;
+  } else if (!metadata.updatedAt) {
+    metadata.updatedAt = now;
+  }
+
+  return { metadata, changed };
+}
+
+async function ensureProjectMetadata(
+  context: any,
+  projectId: string,
+  metadata: ProjectMetadata,
+  metadataChanged: boolean,
+  existingDescription: string | null | undefined
+): Promise<string> {
+  const metadataString = JSON.stringify(metadata, null, 2);
+
+  if (metadataChanged || !existingDescription) {
+    try {
+      await updateProject(projectId, { description: metadataString });
+    } catch (error) {
+      console.error(`[chat] Failed to persist project metadata for ${projectId}:`, error);
+    }
+  }
+
+  if (context?.sandbox) {
+    try {
+      await context.sandbox.fs.uploadFile(Buffer.from(metadataString, 'utf-8'), PROJECT_METADATA_ABSOLUTE_PATH);
+    } catch (error) {
+      console.error(`[chat] Failed to write project metadata file for ${projectId}:`, (error as Error).message);
+    }
+  }
+
+  return metadataString;
+}
+
+function upsertMetadataFile(
+  existingFiles: any[],
+  metadataString: string,
+  projectId: string
+) {
+  const existingEntry = existingFiles.find((file) => file.file_path === PROJECT_METADATA_RELATIVE_PATH);
+  if (existingEntry) {
+    existingEntry.file_content = metadataString;
+  } else {
+    existingFiles.push({
+      project_id: projectId,
+      file_path: PROJECT_METADATA_RELATIVE_PATH,
+      file_content: metadataString,
+      created_at: new Date().toISOString()
+    });
+  }
+}
 
 // Tool definitions for Gemini (functionDeclarations format)
 // NOTE: These are just DESCRIPTIONS/schemas. The actual implementations are in lib/tool-orchestrator.ts
@@ -224,19 +443,50 @@ export async function POST(req: Request) {
     }
 
     const userId = userData.user.id;
+    const trimmedMessage = message.trim();
     console.log(`[chat:${requestId}] User authenticated: ${userId}`);
 
     // Get or create project
     let currentProjectId = projectId;
+    let projectRecord: any = null;
+    let projectMetadata: ProjectMetadata | null = null;
+    let projectMetadataChanged = false;
+    let projectMetadataString = '';
+
     if (!currentProjectId) {
       console.log(`[chat:${requestId}] Creating new project...`);
-      // Create new project
-      const newProject = await createProject(userId, 'New Project', template);
+      const projectName = deriveProjectName(message);
+      const newProject = await createProject(userId, projectName, trimmedMessage);
       currentProjectId = newProject.id;
+      projectRecord = newProject;
       console.log(`[chat:${requestId}] Created project: ${currentProjectId}`);
     } else {
       console.log(`[chat:${requestId}] Using existing project: ${currentProjectId}`);
+      projectRecord = await getProjectById(currentProjectId);
+      if (!projectRecord) {
+        console.error(`[chat:${requestId}] ERROR: Project not found or inaccessible`);
+        return NextResponse.json(
+          { error: 'Project not found' },
+          { status: 404 }
+        );
+      }
     }
+
+    if (!projectRecord) {
+      projectRecord = await getProjectById(currentProjectId);
+    }
+
+    if (!projectRecord) {
+      console.error(`[chat:${requestId}] ERROR: Failed to load project record`);
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
+    const metadataResult = buildProjectMetadata(projectRecord, trimmedMessage, template || null);
+    projectMetadata = metadataResult.metadata;
+    projectMetadataChanged = metadataResult.changed;
 
     // Get tool context (sandbox, etc.)
     console.log(`[chat:${requestId}] Getting tool context (sandbox)...`);
@@ -277,24 +527,40 @@ export async function POST(req: Request) {
       }
     }
 
+    if (projectMetadata) {
+      projectMetadataString = await ensureProjectMetadata(
+        context,
+        currentProjectId,
+        projectMetadata,
+        projectMetadataChanged,
+        projectRecord.description
+      );
+      projectRecord.description = projectMetadataString;
+      projectMetadataChanged = false;
+    }
+
     // Get existing files for context (if project exists)
-    let existingFiles = projectId ? await getProjectFiles(projectId) : [];
+    let existingFiles = currentProjectId ? await getProjectFiles(currentProjectId) : [];
     let fileContext = '';
 
     // For amendments: Use vector DB semantic search to find relevant files
-    if (projectId && existingFiles.length > 0) {
+    if (projectMetadataString) {
+      upsertMetadataFile(existingFiles, projectMetadataString, currentProjectId);
+    }
+
+    if (currentProjectId && existingFiles.length > 0) {
       try {
         const { embedTexts } = await import('@/lib/embeddings');
         const { matchFileChunks, getLatestBuildId } = await import('@/lib/db');
         
-        const latestBuildId = await getLatestBuildId(projectId);
+        const latestBuildId = await getLatestBuildId(currentProjectId);
         if (latestBuildId) {
           console.log(`[chat:${requestId}] Using latest build_id for vector search: ${latestBuildId}`);
         }
         
         // Embed the user's message to find semantically relevant files
         const [queryEmbedding] = await embedTexts([message]);
-        const matches = await matchFileChunks(projectId, queryEmbedding, 30, latestBuildId);
+        const matches = await matchFileChunks(currentProjectId, queryEmbedding, 30, latestBuildId);
         const topFiles = Array.from(new Set(matches.map(m => m.file_path))).slice(0, 12);
         
         console.log(`[chat:${requestId}] Vector search found ${matches.length} chunks, top files: ${topFiles.slice(0, 5).join(', ')}`);
@@ -303,17 +569,28 @@ export async function POST(req: Request) {
         const relevantFiles = existingFiles.filter(f => topFiles.includes(f.file_path));
         
         // Also include critical files (App.tsx, main.tsx, package.json, etc.)
-        const criticalFiles = existingFiles.filter(f => 
-          f.file_path === 'src/App.tsx' || 
-          f.file_path === 'src/main.tsx' || 
-          f.file_path === 'package.json' ||
-          f.file_path === 'index.html'
+        const criticalFiles = existingFiles.filter((f) =>
+          [
+            'src/App.tsx',
+            'src/main.tsx',
+            'package.json',
+            'index.html',
+            'src/index.css',
+            'tailwind.config.ts',
+            PROJECT_METADATA_RELATIVE_PATH
+          ].includes(f.file_path)
         );
         
         // Combine relevant and critical files, deduplicate
         const allContextFiles = Array.from(
           new Map([...relevantFiles, ...criticalFiles].map(f => [f.file_path, f])).values()
         );
+
+        const metadataIndex = allContextFiles.findIndex(f => f.file_path === PROJECT_METADATA_RELATIVE_PATH);
+        if (metadataIndex > 0) {
+          const [metadataFile] = allContextFiles.splice(metadataIndex, 1);
+          allContextFiles.unshift(metadataFile);
+        }
         
         // Build context from semantically relevant files
         fileContext = allContextFiles
@@ -330,9 +607,17 @@ export async function POST(req: Request) {
       } catch (vectorError: any) {
         console.error(`[chat:${requestId}] Vector search failed, falling back to file list:`, vectorError.message);
         // Fallback to original behavior
-        fileContext = existingFiles
-          .slice(0, 20)
-          .map(f => `FILE: ${f.file_path}\n${f.file_content.substring(0, 500)}...`)
+        const fallbackFiles = existingFiles
+          .slice(0, 20);
+
+        const fallbackMetadataIndex = fallbackFiles.findIndex(f => f.file_path === PROJECT_METADATA_RELATIVE_PATH);
+        if (fallbackMetadataIndex > 0) {
+          const [metadataFile] = fallbackFiles.splice(fallbackMetadataIndex, 1);
+          fallbackFiles.unshift(metadataFile);
+        }
+
+        fileContext = fallbackFiles
+          .map(f => `FILE: ${f.file_path}\n${f.file_content.substring(0, 500)}${f.file_content.length > 500 ? '...' : ''}`)
           .join('\n\n');
       }
     } else if (existingFiles.length > 0) {
@@ -344,7 +629,7 @@ export async function POST(req: Request) {
     }
 
     // Load conversation history (last 50 messages for context)
-    const history = projectId ? await getConversationHistory(projectId, 50) : [];
+    const history = currentProjectId ? await getConversationHistory(currentProjectId, 50) : [];
     console.log(`[chat:${requestId}] Loaded ${history.length} messages from history`);
 
     // Build initial messages with conversation history
@@ -354,6 +639,13 @@ export async function POST(req: Request) {
         content: instruction,
       },
     ];
+
+    if (projectMetadataString) {
+      messages.push({
+        role: 'system',
+        content: `PROJECT BRIEF:\n${projectMetadataString}`
+      });
+    }
 
     // Add conversation history (excluding system messages)
     for (const msg of history) {
@@ -386,6 +678,7 @@ export async function POST(req: Request) {
     let iteration = 0;
     let finalResponse = '';
     let geminiHistory: any[] = []; // Gemini conversation history
+    let recitationRetry = false;
 
     // Convert initial messages to Gemini format
     const geminiMessages = convertMessagesToGemini(messages);
@@ -409,7 +702,7 @@ export async function POST(req: Request) {
         config: {
           systemInstruction: instruction,
           tools: GEMINI_TOOLS as any,
-          temperature: 0.7,
+          temperature: 0.2,
         },
       });
       
@@ -449,79 +742,80 @@ export async function POST(req: Request) {
       textLength: geminiResponse.text?.length || 0,
     }, null, 2));
     
-    // Check for RECITATION or other safety filter blocks
+    // Check for safety or other abnormal finish reasons
     let finishReason = geminiResponse.candidates?.[0]?.finishReason;
-    if (finishReason === 'RECITATION') {
-      console.error(`[chat:${requestId}] ❌ Gemini blocked response with RECITATION finish reason (safety filter)`);
-      
-      // If we already have code changes, continue with what we have instead of failing
-      if (hasCodeChanges) {
-        console.log(`[chat:${requestId}] ⚠️ RECITATION detected but code changes already exist, continuing with existing changes...`);
-        // Extract any function calls that might have been created before RECITATION
-        const functionCallsBeforeRecitation = extractFunctionCalls(geminiResponse);
-        if (functionCallsBeforeRecitation.length > 0) {
-          console.log(`[chat:${requestId}] Found ${functionCallsBeforeRecitation.length} function calls before RECITATION, processing them...`);
-          // Process these function calls normally
-        } else {
-          // No function calls, but we have code changes, so continue
-          console.log(`[chat:${requestId}] No function calls in RECITATION response, but code changes exist - continuing...`);
-        }
+    const needsRetryReasons = new Set(['RECITATION', 'SAFETY', 'MAX_TOKENS', 'OTHER']);
+    if (finishReason && finishReason !== 'STOP' && needsRetryReasons.has(finishReason)) {
+      console.warn(`[chat:${requestId}] ⚠️ Non-STOP finish reason: ${finishReason}`);
+
+      if (hasCodeChanges && finishReason !== 'MAX_TOKENS') {
+        console.log(`[chat:${requestId}] ⚠️ ${finishReason} detected but code changes already exist, continuing with existing changes...`);
       } else {
-        // No code changes yet, try retry
-        console.log(`[chat:${requestId}] Attempting retry with simplified prompt...`);
-        
-        // Retry with a simplified system instruction
+        console.log(`[chat:${requestId}] Attempting fallback retry for finish reason ${finishReason}...`);
+        if (recitationRetry) {
+          console.error(`[chat:${requestId}] ❌ Retry already attempted, aborting.`);
+          return NextResponse.json({
+            success: false,
+            error: 'The model could not safely process the request. Please rephrase or break it into smaller steps.',
+            finishReason,
+          }, { status: 400 });
+        }
+
+        recitationRetry = true;
+
         try {
-          const simplifiedInstruction = `You are an AI assistant that helps build web applications using React, Vite, TypeScript, and Tailwind CSS.
+          let retryMessages = messages.map((m) => ({ ...m }));
 
-When a user requests a new project, immediately start creating files using the lov-write tool. Implement all requested features completely.
+          if (finishReason === 'MAX_TOKENS') {
+            const lastIndex = retryMessages.findIndex((m) => m.role === 'user');
+            if (lastIndex >= 0) {
+              retryMessages[lastIndex] = {
+                ...retryMessages[lastIndex],
+                content: `${(trimmedMessage || message).slice(0, 2000)}\n\nFocus on core layout and sections only.`
+              };
+            }
+            console.log(`[chat:${requestId}] 🔁 MAX_TOKENS retry: truncating user prompt to 2000 chars`);
+          } else {
+            console.log(`[chat:${requestId}] 🔁 Retry with original system prompt for finish reason ${finishReason}`);
+          }
 
-Key rules:
-- Use React components with zero props for custom components
-- Use shadcn/ui components from @/components/ui/
-- Create colorful, vibrant designs with gradients
-- Use react-router-dom for routing
-- All components must compile without errors
+          const retryHistory = convertMessagesToGemini(retryMessages);
 
-Start creating the application files now.`;
-          
           const retryResponse = await gemini.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: geminiHistory,
+            contents: retryHistory,
             config: {
-              systemInstruction: simplifiedInstruction,
+              systemInstruction: instruction,
               tools: GEMINI_TOOLS as any,
-              temperature: 0.8, // Slightly higher temperature
+              temperature: 0.7,
             },
           });
-          
+
           const retryFinishReason = retryResponse.candidates?.[0]?.finishReason;
-          if (retryFinishReason === 'RECITATION' || retryFinishReason === 'SAFETY') {
+          if (retryFinishReason && retryFinishReason !== 'STOP') {
             console.error(`[chat:${requestId}] ❌ Retry also blocked with finish reason: ${retryFinishReason}`);
             return NextResponse.json({
               success: false,
-              error: 'Content was blocked by safety filters. Please try rephrasing your request differently or be more specific about what you want to build.',
-              finishReason: 'RECITATION',
-              suggestion: 'Try using different wording, or break your request into smaller parts.',
+              error: 'The model could not safely process the request. Please rephrase or break it into smaller steps.',
+              finishReason: retryFinishReason,
             }, { status: 400 });
           }
-          
-          // Use the retry response
+
           console.log(`[chat:${requestId}] ✅ Retry successful, using retry response`);
+          geminiHistory = retryHistory;
           geminiResponse = retryResponse;
           finishReason = retryFinishReason; // Update finish reason
         } catch (retryError: any) {
           console.error(`[chat:${requestId}] ❌ Retry failed:`, retryError);
           return NextResponse.json({
             success: false,
-            error: 'Content was blocked by safety filters. Please try rephrasing your request or be more specific about what you want to build.',
-            finishReason: 'RECITATION',
+            error: 'The model could not safely process the request. Please rephrase or break it into smaller steps.',
+            finishReason,
           }, { status: 400 });
         }
       }
-    }
-    if (finishReason && finishReason !== 'STOP') {
-      console.warn(`[chat:${requestId}] ⚠️ Unexpected finish reason: ${finishReason}`);
+    } else if (finishReason && finishReason !== 'STOP') {
+      console.warn(`[chat:${requestId}] ⚠️ Unexpected finish reason without retry path: ${finishReason}`);
     }
     
     // Extract function calls and text from response
@@ -607,7 +901,7 @@ Start creating the application files now.`;
           config: {
             systemInstruction: instruction,
             tools: GEMINI_TOOLS as any,
-            temperature: 0.7,
+            temperature: 0.2,
           },
         });
 
@@ -811,7 +1105,7 @@ export function useIsMobile() {
     if (hasCodeChanges && context.sandbox && currentProjectId) {
       try {
         console.log(`[chat:${requestId}] Saving project files to database...`);
-        const { saveProjectFiles, saveProjectFilesToBuild } = await import('@/lib/db');
+        const { saveProjectFilesToBuild } = await import('@/lib/db');
         
         // Get all source files from sandbox
         const sourceFiles: Array<{ path: string; content: string }> = [];
@@ -848,6 +1142,14 @@ export function useIsMobile() {
             for (const filePath of filteredFilePaths) {
               try {
                 const normalizedPath = filePath.startsWith('./') ? filePath.substring(2) : filePath.replace('/workspace/', '');
+                if (
+                  normalizedPath.endsWith('package-lock.json') ||
+                  normalizedPath.endsWith('pnpm-lock.yaml') ||
+                  normalizedPath.endsWith('yarn.lock')
+                ) {
+                  console.log(`[chat:${requestId}] Skipping lock file ${normalizedPath}`);
+                  continue;
+                }
                 const fullPath = `/workspace/${normalizedPath}`;
                 const content = await context.sandbox.fs.downloadFile(fullPath);
                 sourceFiles.push({
@@ -868,11 +1170,11 @@ export function useIsMobile() {
         
         if (sourceFiles.length > 0) {
           // Save files with build_id if available
-          if (buildRecord?.id) {
-            await saveProjectFilesToBuild(currentProjectId, buildRecord.id, sourceFiles);
-            console.log(`[chat:${requestId}] ✅ Saved ${sourceFiles.length} files to database with build_id: ${buildRecord.id}`);
+          const targetBuildId = buildRecord?.id || null;
+          await saveProjectFilesToBuild(currentProjectId, targetBuildId, sourceFiles);
+          if (targetBuildId) {
+            console.log(`[chat:${requestId}] ✅ Saved ${sourceFiles.length} files to database with build_id: ${targetBuildId}`);
           } else {
-            await saveProjectFiles(currentProjectId, sourceFiles, null);
             console.warn(`[chat:${requestId}] ⚠️ Saved ${sourceFiles.length} files without build_id`);
           }
           
@@ -882,10 +1184,11 @@ export function useIsMobile() {
             const { saveFileChunks } = await import('@/lib/db');
             
             const buildIdForChunks = buildRecord?.id || null;
-            console.log(`[chat:${requestId}] Chunking and embedding ${sourceFiles.length} files for vector DB (build_id: ${buildIdForChunks})...`);
-            
+            const chunkCandidates = sourceFiles.filter((f) => !f.path.startsWith('src/components/ui/'));
+            console.log(`[chat:${requestId}] Chunking and embedding ${chunkCandidates.length} file(s) for vector DB (build_id: ${buildIdForChunks})...`);
+
             const allChunks: Array<{ file_path: string; chunk_index: number; content: string }> = [];
-            for (const f of sourceFiles) {
+            for (const f of chunkCandidates) {
               const parts = codeAwareChunks(f.path, f.content);
               parts.forEach((p, i) => allChunks.push({ file_path: f.path, chunk_index: i, content: p }));
             }

@@ -1,0 +1,17 @@
+{
+  "name": "Vibe App",
+  "prompt": "Create a cinematic web experience with rich sections and interactive components.",
+  "template": "vite-react",
+  "summary": null,
+  "tagline": null,
+  "brand": {
+    "primaryColor": null,
+    "secondaryColor": null,
+    "accentColors": [],
+    "typography": null
+  },
+  "notes": [],
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "updatedAt": "2024-01-01T00:00:00.000Z"
+}
+

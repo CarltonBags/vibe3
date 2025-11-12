@@ -27,6 +27,12 @@ window.addEventListener('unhandledrejection', (event) => {
   })
 })
 
+if (!document.documentElement.classList.contains('dark')) {
+  document.documentElement.classList.add('dark')
+}
+
+document.body.classList.add('bg-background', 'text-foreground')
+
 const getBaseName = () => {
   const previewPrefix = '/api/preview/'
   const { pathname } = window.location

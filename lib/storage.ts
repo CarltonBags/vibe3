@@ -2,6 +2,7 @@ import { supabaseAdmin } from './supabase'
 import * as crypto from 'crypto'
 
 const BUCKET_NAME = 'project-builds'
+const ASSETS_BUCKET_NAME = 'project-assets'
 
 /**
  * Upload a project build to Supabase storage
@@ -132,6 +133,119 @@ export function generateBuildHash(files: Array<{ path: string; content: string |
 }
 
 /**
+ * Upload a project asset (image, logo, etc.) to Supabase Storage
+ * Returns the storage path and public URL
+ */
+export async function uploadProjectAsset(
+  userId: string,
+  projectId: string,
+  file: { name: string; content: Buffer | string; mimeType?: string }
+): Promise<{ storagePath: string; publicUrl: string }> {
+  console.log(`📤 Uploading asset ${file.name} for project ${projectId}`)
+  
+  // Generate unique filename to avoid conflicts
+  const timestamp = Date.now()
+  const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_')
+  const filename = `${timestamp}-${sanitizedName}`
+  const storagePath = `${userId}/${projectId}/assets/${filename}`
+  
+  // Convert string to Buffer if needed
+  const buffer = Buffer.isBuffer(file.content) 
+    ? file.content 
+    : Buffer.from(file.content, 'base64')
+  
+  // Determine content type
+  const contentType = file.mimeType || getContentType(file.name)
+  
+  // Upload to assets bucket (or project-builds/assets if assets bucket doesn't exist)
+  const bucketName = ASSETS_BUCKET_NAME
+  const { data, error } = await supabaseAdmin.storage
+    .from(bucketName)
+    .upload(storagePath, buffer, {
+      contentType,
+      upsert: true
+    })
+
+  if (error) {
+    console.error(`Error uploading asset ${file.name}:`, error)
+    // Fallback to project-builds bucket if assets bucket doesn't exist
+    if (error.message?.includes('Bucket not found')) {
+      console.warn(`⚠️ Assets bucket not found, using project-builds bucket`)
+      const fallbackPath = `${userId}/${projectId}/assets/${filename}`
+      const { data: fallbackData, error: fallbackError } = await supabaseAdmin.storage
+        .from(BUCKET_NAME)
+        .upload(fallbackPath, buffer, {
+          contentType,
+          upsert: true
+        })
+      
+      if (fallbackError) {
+        throw new Error(`Failed to upload asset: ${fallbackError.message}`)
+      }
+      
+      // Generate public URL (signed URL for private buckets)
+      const { data: urlData } = await supabaseAdmin.storage
+        .from(BUCKET_NAME)
+        .createSignedUrl(fallbackPath, 31536000) // 1 year
+      
+      return {
+        storagePath: fallbackPath,
+        publicUrl: urlData?.signedUrl || `/api/assets/${userId}/${projectId}/${filename}`
+      }
+    }
+    throw new Error(`Failed to upload asset: ${error.message}`)
+  }
+
+  console.log(`✅ Uploaded asset ${file.name} to ${storagePath}`)
+
+  // Generate public URL (signed URL for private buckets, or public URL for public buckets)
+  const { data: urlData, error: urlError } = await supabaseAdmin.storage
+    .from(bucketName)
+    .createSignedUrl(storagePath, 31536000) // 1 year expiry
+
+  if (urlError || !urlData) {
+    console.warn(`⚠️ Failed to create signed URL for asset, using proxy URL`)
+    return {
+      storagePath,
+      publicUrl: `/api/assets/${userId}/${projectId}/${filename}`
+    }
+  }
+
+  return {
+    storagePath,
+    publicUrl: urlData.signedUrl
+  }
+}
+
+/**
+ * Download a project asset from Supabase Storage
+ */
+export async function downloadProjectAsset(
+  storagePath: string,
+  bucketName: string = ASSETS_BUCKET_NAME
+): Promise<Buffer | null> {
+  try {
+    const { data, error } = await supabaseAdmin.storage
+      .from(bucketName)
+      .download(storagePath)
+
+    if (error) {
+      // Fallback to project-builds bucket
+      if (bucketName === ASSETS_BUCKET_NAME) {
+        return downloadProjectAsset(storagePath, BUCKET_NAME)
+      }
+      console.error(`Error downloading asset ${storagePath}:`, error)
+      return null
+    }
+
+    return Buffer.from(await data.arrayBuffer())
+  } catch (err) {
+    console.error(`Error downloading asset ${storagePath}:`, err)
+    return null
+  }
+}
+
+/**
  * Get content type from file extension
  */
 function getContentType(path: string): string {
@@ -145,6 +259,7 @@ function getContentType(path: string): string {
     jpg: 'image/jpeg',
     jpeg: 'image/jpeg',
     gif: 'image/gif',
+    webp: 'image/webp',
     svg: 'image/svg+xml',
     ico: 'image/x-icon',
     woff: 'font/woff',

@@ -105,7 +105,7 @@ export async function createProject(
 export async function updateProject(
   projectId: string,
   updates: {
-    sandbox_id?: string
+    sandbox_id?: string | null
     preview_url?: string
     preview_token?: string
     status?: 'generating' | 'active' | 'archived' | 'error'
@@ -332,6 +332,152 @@ export async function saveProjectFilesToBuild(
   if (error) {
     console.error('Error saving project files (build-scoped):', error)
     throw new Error('Failed to save project files for build')
+  }
+}
+
+/**
+ * Save an asset (image, logo, etc.) to project_files with storage metadata
+ * The actual file is stored in Supabase Storage, and metadata is stored in project_files
+ */
+export async function saveProjectAsset(
+  projectId: string,
+  buildId: string | null,
+  filePath: string, // Path used in code (e.g., "public/logo.png")
+  assetMetadata: {
+    storagePath: string // Path in Supabase Storage
+    publicUrl: string // Public/signed URL
+    mimeType: string
+    fileSize: number
+    bucket?: string // Bucket name (optional)
+  }
+): Promise<void> {
+  const assetData = {
+    type: 'asset',
+    storage_path: assetMetadata.storagePath,
+    public_url: assetMetadata.publicUrl,
+    mime_type: assetMetadata.mimeType,
+    bucket: assetMetadata.bucket || 'project-assets'
+  }
+
+  const fileRecord = {
+    project_id: projectId,
+    build_id: buildId,
+    file_path: filePath,
+    file_content: JSON.stringify(assetData),
+    file_size: assetMetadata.fileSize
+  }
+
+  const { error } = await supabaseAdmin
+    .from('project_files')
+    .insert(fileRecord)
+
+  if (error) {
+    console.error('Error saving project asset:', error)
+    throw new Error('Failed to save project asset')
+  }
+
+  console.log(`✅ Saved asset metadata for ${filePath}`)
+}
+
+/**
+ * Check if a project file is an asset (based on file_content being JSON with type: "asset")
+ */
+export function isAssetFile(file: { file_content: string }): boolean {
+  try {
+    const content = JSON.parse(file.file_content)
+    return content.type === 'asset'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Get asset metadata from a project file
+ */
+export function getAssetMetadata(file: { file_content: string }): {
+  storagePath: string
+  publicUrl: string
+  mimeType: string
+  bucket: string
+} | null {
+  try {
+    const content = JSON.parse(file.file_content)
+    if (content.type === 'asset') {
+      return {
+        storagePath: content.storage_path,
+        publicUrl: content.public_url,
+        mimeType: content.mime_type,
+        bucket: content.bucket || 'project-assets'
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Update asset records to link them to a build_id
+ * This is called after a build is created to link assets to the build
+ */
+export async function linkAssetsToBuild(
+  projectId: string,
+  buildId: string | null
+): Promise<void> {
+  if (!buildId) {
+    console.log('No build_id provided, skipping asset linking');
+    return;
+  }
+
+  try {
+    // Find all asset files for this project that don't have a build_id
+    const { data: assetFiles, error: fetchError } = await supabaseAdmin
+      .from('project_files')
+      .select('id, file_path, file_content')
+      .eq('project_id', projectId)
+      .is('build_id', null);
+
+    if (fetchError) {
+      console.error('Error fetching asset files:', fetchError);
+      return;
+    }
+
+    if (!assetFiles || assetFiles.length === 0) {
+      console.log('No asset files found to link to build');
+      return;
+    }
+
+    // Filter for asset files (type: "asset")
+    const assets = assetFiles.filter((file: any) => {
+      try {
+        const content = JSON.parse(file.file_content);
+        return content.type === 'asset';
+      } catch {
+        return false;
+      }
+    });
+
+    if (assets.length === 0) {
+      console.log('No asset files found to link to build');
+      return;
+    }
+
+    // Update asset records to link them to the build_id
+    const assetIds = assets.map((a: any) => a.id);
+    const { error: updateError } = await supabaseAdmin
+      .from('project_files')
+      .update({ build_id: buildId })
+      .in('id', assetIds);
+
+    if (updateError) {
+      console.error('Error linking assets to build:', updateError);
+      throw new Error('Failed to link assets to build');
+    }
+
+    console.log(`✅ Linked ${assets.length} asset file(s) to build ${buildId}`);
+  } catch (error: any) {
+    console.error('Error linking assets to build:', error);
+    // Don't throw - asset linking is not critical
   }
 }
 

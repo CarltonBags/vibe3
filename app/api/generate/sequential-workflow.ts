@@ -2,9 +2,9 @@
 // This replaces the batch generation approach with component-by-component building
 // Each component is compiled and fixed before moving to the next
 
+import * as path from "path";
 import { GoogleGenAI } from "@google/genai";
 import { OpenAI } from "openai";
-import { Daytona } from "@daytonaio/sdk";
 import { addStatus } from "@/lib/status-tracker";
 
 export interface Task {
@@ -268,6 +268,7 @@ CRITICAL RULES:
 - ✅ Use shadcn/ui components from "@/components/ui/" (lowercase paths like "@/components/ui/button")
 - ❌ DO NOT create files in src/components/ui/ - they already exist
 - ❌ DO NOT import from "@/components/lib/" - those don't exist
+- ✅ Only import from "@/lib/..." if that file already exists (currently utilities like "@/lib/utils"); never invent modules such as "@/lib/theme-provider"
 - ✅ Code must compile without TypeScript errors
 - ✅ All JSX tags must be properly closed
 - ✅ All imports must be valid
@@ -429,6 +430,147 @@ export async function executeSequentialWorkflow(
   const MAX_FIX_ATTEMPTS = 5;
   
   const declaredDependencies = new Set<string>();
+  const allowedLibImports = new Set<string>();
+
+  const importExistenceCache = new Map<string, boolean>();
+
+  const candidateExtensions = ['', '.tsx', '.ts', '.jsx', '.js'];
+
+  const toLibAlias = (filePath: string) => {
+    if (!filePath.startsWith('src/lib/')) return null;
+    const withoutExt = filePath
+      .replace(/^src\//, '')
+      .replace(/\.(tsx|ts|jsx|js|mjs|cjs)$/i, '');
+    const alias = `@/${withoutExt}`;
+    const aliases = [alias];
+    if (alias.endsWith('/index')) {
+      aliases.push(alias.replace(/\/index$/, ''));
+    }
+    return aliases;
+  };
+
+  const seedLibImports = async () => {
+    try {
+      const result = await sandbox.process.executeCommand(
+        'cd /workspace && find src/lib -type f 2>/dev/null || true'
+      );
+      const files =
+        result.result
+          ?.split('\n')
+          .map((line: string) => line.trim())
+          .filter((line: string) => line.length > 0) ?? [];
+      for (const file of files) {
+        if (!file.startsWith('src/lib/')) continue;
+        const aliases = toLibAlias(file);
+        if (!aliases) continue;
+        aliases.forEach((alias) => allowedLibImports.add(alias));
+      }
+    } catch (error) {
+      console.warn('[generate] Could not enumerate src/lib files:', error);
+    }
+  };
+
+  await seedLibImports();
+
+  const ensureImportPathsValid = async (
+    sandbox: any,
+    filePath: string,
+    content: string,
+    allowedLibs: Set<string>
+  ): Promise<string[]> => {
+    const issues: string[] = [];
+    const seen = new Set<string>();
+    const importRegex = /import\s+[^'"]*from\s+['"]([^'"]+)['"]/g;
+    let match: RegExpExecArray | null;
+
+    const tryLoad = async (absolutePath: string): Promise<boolean> => {
+      if (importExistenceCache.has(absolutePath)) {
+        return Boolean(importExistenceCache.get(absolutePath));
+      }
+      try {
+        await sandbox.fs.downloadFile(absolutePath);
+        importExistenceCache.set(absolutePath, true);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const buildCandidates = (basePath: string): string[] => {
+      const normalizedBase = basePath.replace(/\/+$/, '');
+      const candidates = new Set<string>();
+
+      for (const ext of candidateExtensions) {
+        candidates.add(`${normalizedBase}${ext}`);
+        candidates.add(`${normalizedBase}/index${ext}`);
+      }
+
+      return Array.from(candidates);
+    };
+
+    const resolveSpecifierPaths = (specifier: string, sourceFile: string): string[] => {
+      if (specifier.startsWith('@/')) {
+        const aliasPath = specifier.replace(/^@\//, 'src/');
+        return buildCandidates(`/workspace/${aliasPath}`);
+      }
+
+      if (specifier.startsWith('./') || specifier.startsWith('../')) {
+        const baseDir = path.posix.dirname(`/workspace/${sourceFile}`);
+        const resolved = path.posix.normalize(path.posix.join(baseDir, specifier));
+        return buildCandidates(resolved);
+      }
+
+      return [];
+    };
+
+    while ((match = importRegex.exec(content)) !== null) {
+      const specifier = match[1];
+      if (seen.has(specifier)) continue;
+      seen.add(specifier);
+
+      if (specifier.startsWith('@/components/lib')) {
+        issues.push(
+          `Do not import from ${specifier}. Template library components are reference-only; use "@/components/..." instead.`
+        );
+        continue;
+      }
+
+      if (specifier.startsWith('@/lib/')) {
+        const normalized = specifier.replace(/\.(tsx|ts|jsx|js)$/i, '');
+        if (
+          !allowedLibs.has(specifier) &&
+          !allowedLibs.has(normalized) &&
+          !allowedLibs.has(`${normalized}/index`)
+        ) {
+          issues.push(
+            `Module ${specifier} does not exist in src/lib. Only import utilities that already exist (e.g., "@/lib/utils").`
+          );
+        }
+        continue;
+      }
+
+      if (specifier.startsWith('@/') || specifier.startsWith('./') || specifier.startsWith('../')) {
+        const candidates = resolveSpecifierPaths(specifier, filePath);
+        if (candidates.length === 0) continue;
+
+        let found = false;
+        for (const candidate of candidates) {
+          if (await tryLoad(candidate)) {
+            found = true;
+            break;
+          }
+        }
+
+        if (!found) {
+          issues.push(
+            `Import "${specifier}" in ${filePath} points to a file that does not exist yet. Generate that file or remove the import.`
+          );
+        }
+      }
+    }
+
+    return issues;
+  };
 
   const refreshDeclaredDependencies = (pkgContent: string) => {
     try {
@@ -543,6 +685,8 @@ export async function executeSequentialWorkflow(
       } catch (err: any) {
         generationError = err;
         console.error(`[generate:${requestId}] Error generating ${task.file}:`, err?.message || err);
+        generated = null;
+        currentContent = null;
         
         // Check if it's a retryable error (503, 429, etc.)
         const isRetryable = err?.message?.includes('503') || 
@@ -575,6 +719,47 @@ export async function executeSequentialWorkflow(
       
       const generatedFile = generated.files[0];
       currentContent = generatedFile.content;
+
+      // Track lib aliases for newly generated lib files
+      if (generatedFile.path.startsWith('src/lib/')) {
+        const aliases = toLibAlias(generatedFile.path);
+        if (aliases) {
+          aliases.forEach((alias) => allowedLibImports.add(alias));
+        }
+      }
+
+      // Validate imports reference existing modules
+      const importIssues = await ensureImportPathsValid(
+        sandbox,
+        generatedFile.path,
+        currentContent,
+        allowedLibImports
+      );
+
+      if (importIssues.length > 0) {
+        console.warn(
+          `[generate:${requestId}] Invalid import(s) detected in ${task.file}: ${importIssues.join(' | ')}`
+        );
+        if (attempts < MAX_FIX_ATTEMPTS) {
+          addStatus(
+            requestId,
+            'components',
+            `Invalid imports in ${task.task}, retrying...`,
+            progress
+          );
+          currentContent = null;
+          generated = null;
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(800 * attempts, 3000))
+          );
+          continue;
+        } else {
+          console.error(
+            `[generate:${requestId}] Aborting ${task.file} due to invalid imports after ${attempts} attempts`
+          );
+          break;
+        }
+      }
       
       // CRITICAL: Pre-compilation validation and fixes (MUST run BEFORE compilation)
       try {
@@ -784,6 +969,25 @@ export async function executeSequentialWorkflow(
           if (fixedContent) {
             currentContent = fixedContent;
             console.log(`[generate:${requestId}] ✓ Applied fix from GPT-4o-mini for ${task.file}, recompiling...`);
+            const fixImportIssues = await ensureImportPathsValid(
+              sandbox,
+              task.file,
+              currentContent,
+              allowedLibImports
+            );
+            if (fixImportIssues.length > 0) {
+              console.warn(
+                `[generate:${requestId}] Invalid import(s) after fix in ${task.file}: ${fixImportIssues.join(' | ')}`
+              );
+              compileResult = {
+                success: false,
+                errors: fixImportIssues.map((issue) => ({
+                  file: task.file,
+                  error: issue
+                }))
+              };
+              continue;
+            }
             // Recompile the fixed content
             compileResult = await compileFile(sandbox, task.file, currentContent);
             if (compileResult.success) {

@@ -522,14 +522,14 @@ export default function Page() {
         <div className="container z-10 space-y-6">
           <p className="text-lg font-medium text-muted-foreground">Trusted by 10,000+ users</p>
           <h1 className="text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">
-            Your Amazing<br />
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">
-              Product Title
-            </span>
-          </h1>
+              Your Amazing<br />
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">
+                Product Title
+              </span>
+            </h1>
           <p className="mx-auto max-w-[700px] text-lg text-muted-foreground sm:text-xl">
-            A compelling description that clearly explains the value proposition and benefits to users
-          </p>
+              A compelling description that clearly explains the value proposition and benefits to users
+            </p>
           <div className="flex flex-col gap-4 sm:flex-row sm:justify-center">
             <Button>Get Started Free</Button>
             <Button variant="outline">Watch Demo</Button>
@@ -619,7 +619,7 @@ export default function Page() {
           </div>
           <div className="mt-12 border-t pt-8 text-center text-sm text-muted-foreground">
             © 2024 Your Company. All rights reserved.
-          </div>
+        </div>
         </div>
       </footer>
     </div>

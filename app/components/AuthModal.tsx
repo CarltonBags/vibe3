@@ -23,8 +23,8 @@ export default function AuthModal({ isOpen, onClose, initialMode = 'login' }: Au
   const { signIn, signUp, signInWithGoogle } = useAuth()
 
   // Check if Supabase is configured
-  const isSupabaseConfigured = typeof window !== 'undefined' &&
-    process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID &&
+  const isSupabaseConfigured = typeof window !== 'undefined' && 
+    process.env.NEXT_PUBLIC_SUPABASE_PROJECT_ID && 
     process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC
 
   // Helper function to categorize errors and provide user-friendly messages

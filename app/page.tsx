@@ -7,6 +7,7 @@ import { useAuth } from '@/lib/auth-context'
 import AuthModal from './components/AuthModal'
 import UserMenu from './components/UserMenu'
 import UsageIndicator from './components/UsageIndicator'
+import ProjectPlanner from './components/ProjectPlanner'
 
 interface FileContent {
   path: string;
@@ -33,6 +34,13 @@ interface SandboxResponse {
 type ViewMode = 'preview' | 'code';
 type PageSection = 'home' | 'integrations' | 'pricing' | 'about' | 'generate';
 
+interface StatusItem {
+  id: number;
+  message: string;
+  step: string;
+  timestamp: number;
+}
+
 export default function Home() {
   const { user, loading: authLoading } = useAuth()
   const searchParams = useSearchParams()
@@ -43,8 +51,7 @@ export default function Home() {
   const [hasGenerated, setHasGenerated] = useState(false)
   const [sandboxData, setSandboxData] = useState<SandboxResponse | null>(null)
   const [progress, setProgress] = useState('')
-  const [progressPercent, setProgressPercent] = useState(0)
-  const [completedItems, setCompletedItems] = useState<Array<{ name: string; type: 'component' | 'task' }>>([])
+  const [statusItems, setStatusItems] = useState<StatusItem[]>([])
   const [error, setError] = useState('')
   const [viewMode, setViewMode] = useState<ViewMode>('preview')
   const [selectedFile, setSelectedFile] = useState<string>('app/page.tsx')
@@ -57,7 +64,19 @@ export default function Home() {
   const [debugResults, setDebugResults] = useState<any>(null)
   const [uploadedImages, setUploadedImages] = useState<string[]>([])
   const [uploadedImageNames, setUploadedImageNames] = useState<string[]>([])
+  const [showPlanner, setShowPlanner] = useState(false)
+  const [plannerData, setPlannerData] = useState<{
+    selectedPages: any[]
+    selectedStyle: string
+    colors: string[]
+    logo: string | null
+    additionalInfo: string
+    planData: any
+  } | null>(null)
   const hasStartedRef = useRef(false)
+  const statusPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const currentRequestIdRef = useRef<string | null>(null)
+  const latestStatusFetcherRef = useRef<(() => Promise<void>) | null>(null)
   const editorOptions = useMemo(() => ({
     minimap: { enabled: false },
     wordWrap: 'on',
@@ -73,6 +92,184 @@ export default function Home() {
     autoClosingBrackets: 'never',
     autoClosingQuotes: 'never'
   }), [])
+
+  const transformStatusMessage = (rawMessage?: string): string | null => {
+    if (!rawMessage) return null;
+    const trimmed = rawMessage.trim();
+    if (!trimmed) return null;
+
+    const lower = trimmed.toLowerCase();
+    if (lower.includes('error') || lower.includes('failed')) {
+      return null;
+    }
+
+    const buildingMatch = trimmed.match(/Building component\s+(\d+)\/(\d+):\s*(.+)/i);
+    if (buildingMatch) {
+      const [, current, total, componentName] = buildingMatch;
+      return `Building ${componentName.trim()} (${current}/${total})`;
+    }
+
+    const generatingMatch = trimmed.match(/Generating\s+(.+?)\.\.\./i);
+    if (generatingMatch) {
+      return `Crafting ${generatingMatch[1].trim()}...`;
+    }
+
+    const fixingMatch = trimmed.match(/Fixing errors in\s+(.+?)(\s*\(attempt.*\))?/i);
+    if (fixingMatch) {
+      return `Polishing ${fixingMatch[1].trim()}...`;
+    }
+
+    const retryMatch = trimmed.match(/Retrying generation of\s+(.+?)(\s*\(attempt.*\))?/i);
+    if (retryMatch) {
+      return `Taking another creative pass at ${retryMatch[1].trim()}...`;
+    }
+
+    const compilingMatch = trimmed.match(/Compiling\s+(.+?)\.\.\./i);
+    if (compilingMatch) {
+      return `Reviewing ${compilingMatch[1].trim()}...`;
+    }
+
+    if (/Model overloaded/i.test(trimmed)) {
+      return 'Letting the model catch its breath...';
+    }
+
+    if (/Component generation complete/i.test(trimmed)) {
+      return 'Components ready ✨';
+    }
+
+    if (/Project plan finalized/i.test(trimmed)) {
+      return 'Project plan locked in';
+    }
+
+    if (/Installing dependencies/i.test(trimmed)) {
+      return 'Installing essentials...';
+    }
+
+    if (/Dependencies installed/i.test(trimmed)) {
+      return 'Essentials installed';
+    }
+
+    if (/Building project for production/i.test(trimmed)) {
+      return 'Preparing final build...';
+    }
+
+    if (/Build completed/i.test(trimmed)) {
+      return 'Build completed ✅';
+    }
+
+    if (/Uploading build to storage/i.test(trimmed)) {
+      return 'Uploading build...';
+    }
+
+    if (/Build uploaded successfully/i.test(trimmed)) {
+      return 'Build uploaded';
+    }
+
+    if (/Project generation complete/i.test(trimmed)) {
+      return 'Project ready! 🎉';
+    }
+
+    if (/Planning your project/i.test(trimmed)) {
+      return 'Planning your project...';
+    }
+
+    if (/Starting to build/i.test(trimmed)) {
+      return 'Kicking off component builds...';
+    }
+
+    if (/Generating main App\.tsx/i.test(trimmed)) {
+      return 'Assembling the main app shell...';
+    }
+
+    if (/App\.tsx generated/i.test(trimmed)) {
+      return 'App shell generated';
+    }
+
+    if (/Fixing .*App\.tsx/i.test(trimmed)) {
+      return 'Polishing the app shell...';
+    }
+
+    if (/✓/i.test(trimmed)) {
+      return trimmed.replace(/^✓\s*/, '✓ ');
+    }
+
+    return trimmed;
+  };
+
+  const stopStatusPolling = () => {
+    if (statusPollIntervalRef.current) {
+      clearInterval(statusPollIntervalRef.current);
+      statusPollIntervalRef.current = null;
+    }
+    latestStatusFetcherRef.current = null;
+    currentRequestIdRef.current = null;
+  };
+
+  const startStatusPolling = (requestId: string) => {
+    stopStatusPolling();
+    currentRequestIdRef.current = requestId;
+    setStatusItems([]);
+
+    const fetchStatuses = async () => {
+      try {
+        const params = new URLSearchParams({ requestId, all: 'true' });
+        const response = await fetch(`/api/generate/status?${params.toString()}`);
+        if (!response.ok) {
+          return;
+        }
+
+        const data = await response.json();
+        const statuses = Array.isArray(data.statuses) ? data.statuses : [];
+
+        setStatusItems(prev => {
+          const existingIds = new Set(prev.map(item => item.id));
+          const updated = [...prev];
+
+          statuses.forEach((status: any) => {
+            if (!status || typeof status.timestamp !== 'number') {
+              return;
+            }
+            const friendlyMessage = transformStatusMessage(status.message);
+            if (!friendlyMessage) {
+              return;
+            }
+
+            if (existingIds.has(status.timestamp)) {
+              const index = updated.findIndex(item => item.id === status.timestamp);
+              if (index !== -1) {
+                const currentItem = updated[index];
+                if (currentItem.message !== friendlyMessage || currentItem.step !== status.step) {
+                  updated[index] = {
+                    ...currentItem,
+                    message: friendlyMessage,
+                    step: status.step || currentItem.step,
+                  };
+                }
+              }
+              return;
+            }
+
+            updated.push({
+              id: status.timestamp,
+              message: friendlyMessage,
+              step: status.step || 'general',
+              timestamp: status.timestamp,
+            });
+            existingIds.add(status.timestamp);
+          });
+
+          updated.sort((a, b) => a.timestamp - b.timestamp);
+          return updated;
+        });
+      } catch (statusError) {
+        console.warn('Status polling failed', statusError);
+      }
+    };
+
+    latestStatusFetcherRef.current = fetchStatuses;
+    fetchStatuses();
+    statusPollIntervalRef.current = setInterval(fetchStatuses, 1400);
+  };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -105,6 +302,12 @@ export default function Home() {
     setUploadedImages(prev => prev.filter((_, i) => i !== index))
     setUploadedImageNames(prev => prev.filter((_, i) => i !== index))
   }
+
+  useEffect(() => {
+    return () => {
+      stopStatusPolling()
+    }
+  }, [])
 
   const handleSaveBuild = async () => {
     try {
@@ -294,9 +497,57 @@ export default function Home() {
     }
   }
 
+  // Handle form submission - show planner for new projects, or start generation for amendments
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!prompt.trim() || hasStartedRef.current) return
+    
+    // Check if user is authenticated
+    if (!user) {
+      setShowAuthModal(true)
+      return
+    }
+
+    // For new projects, show the planner first
+    if (!hasGenerated) {
+      setShowPlanner(true)
+      return
+    }
+
+    // For amendments, proceed directly
+    await startGeneration(prompt)
+  }
+
+  // Handle planner completion - start generation with planner data
+  const handlePlannerComplete = async (data: {
+    prompt: string
+    selectedPages: any[]
+    selectedStyle: string
+    colors: string[]
+    logo: string | null
+    additionalInfo: string
+    planData: any
+  }) => {
+    setPlannerData(data)
+    setShowPlanner(false)
+    
+    // Start generation with planner data
+    await startGeneration(data.prompt, data)
+  }
+
+  // Start generation with or without planner data
+  const startGeneration = async (
+    message: string,
+    plannerData?: {
+      selectedPages: any[]
+      selectedStyle: string
+      colors: string[]
+      logo: string | null
+      additionalInfo: string
+      planData: any
+    }
+  ) => {
+    if (hasStartedRef.current) return
     
     // Check if user is authenticated
     if (!user) {
@@ -308,25 +559,38 @@ export default function Home() {
     setHasGenerated(true)
     setIsGenerating(true)
     setProgress('Starting project generation...')
-    setProgressPercent(0)
     setError('') // Clear previous errors
+    const clientRequestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+    startStatusPolling(clientRequestId)
     
     try {
       // Chat route doesn't use status polling - show progress
-      setProgress('🤖 Planning your project...')
-      setProgressPercent(10)
+      setProgress('🤖 Building your project...')
+
+      const requestBody: any = { 
+        message: message.trim(),
+        images: uploadedImages,
+        imageNames: uploadedImageNames,
+        template: 'vite-react',
+        requestId: clientRequestId
+      }
+
+      // Add planner data if available
+      if (plannerData) {
+        requestBody.planData = plannerData.planData
+        requestBody.selectedPages = plannerData.selectedPages
+        requestBody.selectedStyle = plannerData.selectedStyle
+        requestBody.colors = plannerData.colors
+        requestBody.logo = plannerData.logo
+        requestBody.additionalInfo = plannerData.additionalInfo
+      }
 
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
-          message: prompt.trim(),
-          images: uploadedImages,
-          imageNames: uploadedImageNames,
-          template: 'vite-react'
-        }),
+        body: JSON.stringify(requestBody),
       })
 
       // Get response data
@@ -338,6 +602,7 @@ export default function Home() {
         setError('Failed to parse server response');
         setIsGenerating(false);
         hasStartedRef.current = false;
+        stopStatusPolling();
         return;
       }
       
@@ -348,6 +613,7 @@ export default function Home() {
         setHasGenerated(false)
         hasStartedRef.current = false
         setIsGenerating(false)
+        stopStatusPolling();
         return
       }
       
@@ -356,6 +622,7 @@ export default function Home() {
         setHasGenerated(false)
         hasStartedRef.current = false
         setIsGenerating(false)
+        stopStatusPolling();
         return
       }
       
@@ -366,6 +633,7 @@ export default function Home() {
         setHasGenerated(false)
         hasStartedRef.current = false
         setIsGenerating(false)
+        stopStatusPolling();
         return
       }
 
@@ -392,7 +660,6 @@ export default function Home() {
           files: files,
         })
         setProgress('✅ Website is ready!')
-        setProgressPercent(100)
         setPrompt('')
         setUploadedImages([])
         setUploadedImageNames([])
@@ -403,12 +670,19 @@ export default function Home() {
       console.error('Error creating sandbox:', err)
       setError(err instanceof Error ? err.message : 'Failed to create sandbox and execute code')
       setProgress('')
-      setProgressPercent(0)
       hasStartedRef.current = false
       setIsGenerating(false)
       // Note: If statusPollInterval was created, it should have been cleared above
       // But we can't access it here since it's in the try block scope
     } finally {
+      if (latestStatusFetcherRef.current) {
+        try {
+          await latestStatusFetcherRef.current()
+        } catch (statusError) {
+          console.warn('Final status refresh failed', statusError)
+        }
+      }
+      stopStatusPolling()
       setIsGenerating(false)
     }
   }
@@ -419,12 +693,12 @@ export default function Home() {
     setHasGenerated(false)
     setSandboxData(null)
     setProgress('')
-    setProgressPercent(0)
     setError('')
     setAmendmentHistory([])
     setUploadedImages([])
     setUploadedImageNames([])
-    setCompletedItems([])
+    setStatusItems([])
+    stopStatusPolling()
     hasStartedRef.current = false
     
     // Clear URL params if any
@@ -443,6 +717,8 @@ export default function Home() {
     setIsAmending(true)
     setError('')
     setProgress('🔧 Processing your changes...')
+  const clientRequestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  startStatusPolling(clientRequestId)
 
     try {
       const projectId = sandboxData.projectId || searchParams.get('projectId')
@@ -459,7 +735,8 @@ export default function Home() {
           projectId: projectId,
           images: uploadedImages,
           imageNames: uploadedImageNames,
-          template: 'vite-react'
+          template: 'vite-react',
+          requestId: clientRequestId
         }),
       })
 
@@ -498,6 +775,14 @@ export default function Home() {
       console.error('Amendment error:', err)
       setError(err instanceof Error ? err.message : 'Failed to apply changes')
     } finally {
+    if (latestStatusFetcherRef.current) {
+      try {
+        await latestStatusFetcherRef.current()
+      } catch (statusError) {
+        console.warn('Final status refresh failed', statusError)
+      }
+    }
+    stopStatusPolling()
       setIsAmending(false)
     }
   }
@@ -778,38 +1063,46 @@ export default function Home() {
 
             {hasGenerated && (
               <div className="space-y-4">
-                {(isGenerating || isAmending) && (
-                  <div className="space-y-4">
-                    <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700/50">
-                      <div className="flex items-center space-x-3 mb-3">
+                {(statusItems.length > 0 || isGenerating || isAmending) && (
+                  <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700/50">
+                    <div className="flex items-center gap-3 mb-4">
+                      {isGenerating || isAmending ? (
                         <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-purple-500"></div>
-                        <div className="flex-1">
-                          <p className="text-sm font-medium text-gray-200">{progress || 'Starting...'}</p>
-                        </div>
-                      </div>
-                      {/* Progress bar */}
-                      <div className="w-full bg-gray-700/50 rounded-full h-1.5 overflow-hidden mb-3">
-                        <div 
-                          className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-500"
-                          style={{ width: `${progressPercent}%` }}
-                        ></div>
-                      </div>
-                      {/* Completed items with checkmarks */}
-                      {completedItems.length > 0 && (
-                        <div className="flex flex-wrap gap-2 mt-3">
-                          {completedItems.map((item, idx) => (
-                            <div
-                              key={`${item.name}-${idx}`}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-green-500/20 border border-green-500/50 rounded-md text-xs"
-                            >
-                              <svg className="w-3.5 h-3.5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                              <span className="text-green-400 font-medium">{item.name}</span>
-                            </div>
-                          ))}
-                        </div>
+                      ) : (
+                        <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
                       )}
+                      <p className="text-sm font-medium text-gray-200">
+                        {isGenerating || isAmending
+                          ? (progress || 'Crafting your experience...')
+                          : (progress || 'All steps complete!')}
+                      </p>
+                    </div>
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {statusItems.length === 0 && (isGenerating || isAmending) && (
+                        <p className="text-xs text-gray-400">Warming up...</p>
+                      )}
+                      {statusItems.map((status, idx) => {
+                        const isLast = idx === statusItems.length - 1;
+                        const isActive = isLast && (isGenerating || isAmending);
+                        return (
+                          <div key={status.id} className="flex items-start gap-3 text-sm">
+                            <div className="mt-0.5">
+                              {isActive ? (
+                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-purple-400"></div>
+                              ) : (
+                                <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                              )}
+                            </div>
+                            <div className={`flex-1 text-xs ${isActive ? 'text-white' : 'text-gray-300'}`}>
+                              {status.message}
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
                 )}
@@ -1471,7 +1764,7 @@ export default function Home() {
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="relative">
                 <label className="block text-sm font-medium text-gray-300 mb-3 text-left">
-                  Describe what you want to build
+                  What are we building?
                 </label>
                 <textarea
                   value={prompt}
@@ -1816,6 +2109,19 @@ export default function Home() {
         isOpen={showAuthModal}
         onClose={() => setShowAuthModal(false)}
       />
+
+      {/* Project Planner Modal */}
+      {showPlanner && (
+        <ProjectPlanner
+          prompt={prompt}
+          onComplete={handlePlannerComplete}
+          onCancel={() => {
+            setShowPlanner(false)
+            setPrompt('')
+            hasStartedRef.current = false
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -2180,7 +2180,7 @@ ${fileContent}
         console.log(`✅ Build ${buildRecord.id} finalized as successful`);
       } else {
         // Fallback: save without build_id (not ideal, but better than failing)
-        await saveProjectFiles(projectId, updatedFiles);
+      await saveProjectFiles(projectId, updatedFiles);
         console.warn('⚠️ Project files saved without build_id (build record creation failed)');
       }
 

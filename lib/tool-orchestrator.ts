@@ -8,7 +8,87 @@ import crypto from 'crypto';
 import { promises as fs } from 'fs';
 import { Daytona } from '@daytonaio/sdk';
 import { supabaseAdmin } from '@/lib/supabase';
-import { getProjectFiles } from '@/lib/db';
+import { generateAiImageToSandbox } from '@/lib/ai-image';
+import { isValidLucideIcon, findClosestLucideIcon } from '@/lib/lucide-icons';
+import { getProjectFiles, updateProject } from '@/lib/db';
+
+const SANDBOX_MAX_IDLE_MS = 1000 * 60 * 60 * 24 * 3; // 3 days
+const SANDBOX_START_TIMEOUT_SECONDS = parseInt(process.env.DAYTONA_START_TIMEOUT || '180', 10);
+
+function createDaytonaClient() {
+  return new Daytona({
+    apiKey: process.env.DAYTONA_KEY || '',
+    apiUrl: process.env.DAYTONA_URL || 'https://api.daytona.io',
+  });
+}
+
+async function safeDeleteSandbox(sandbox: any, sandboxId: string) {
+  if (!sandbox) return;
+  try {
+    await sandbox.delete?.(60);
+  } catch (error) {
+    console.warn(`[sandbox] Failed to delete sandbox ${sandboxId}:`, error);
+  }
+}
+
+async function setAutoDeleteIntervalMinutes(sandbox: any, minutes: number) {
+  if (!sandbox || typeof sandbox.setAutoDeleteInterval !== 'function') return;
+  try {
+    await sandbox.setAutoDeleteInterval(Math.max(minutes, 0));
+  } catch (error) {
+    console.warn('[sandbox] Failed to set auto-delete interval:', error);
+  }
+}
+
+async function reviveSandboxIfNeeded(daytona: Daytona, sandbox: any, projectId: string): Promise<any | null> {
+  if (!sandbox) return null;
+
+  const sandboxId = sandbox.id;
+  const state = sandbox.state;
+  const updatedAt = sandbox.updatedAt ? Date.parse(sandbox.updatedAt) : undefined;
+  const idleDuration = updatedAt ? Date.now() - updatedAt : undefined;
+  const isStale = typeof idleDuration === 'number' && idleDuration > SANDBOX_MAX_IDLE_MS;
+
+  if (state !== 'started') {
+    if (isStale) {
+      console.log(`[sandbox] ${sandboxId} has been idle for more than 3 days. Deleting.`);
+      await safeDeleteSandbox(sandbox, sandboxId);
+      await updateProject(projectId, { sandbox_id: null });
+      return null;
+    }
+
+    console.log(`[sandbox] Attempting to start sandbox ${sandboxId}. Current state: ${state}`);
+    try {
+      await sandbox.start(SANDBOX_START_TIMEOUT_SECONDS);
+      const refreshed = await daytona.get(sandboxId);
+      await setAutoDeleteIntervalMinutes(refreshed, Math.floor(SANDBOX_MAX_IDLE_MS / (1000 * 60)));
+      return refreshed;
+    } catch (startError) {
+      console.warn(`[sandbox] Failed to start sandbox ${sandboxId}, will recreate`, startError);
+      await safeDeleteSandbox(sandbox, sandboxId);
+      await updateProject(projectId, { sandbox_id: null });
+      return null;
+    }
+  }
+
+  return sandbox;
+}
+
+async function loadProjectSandbox(projectId: string, userId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('projects')
+    .select('sandbox_id')
+    .eq('id', projectId)
+    .eq('user_id', userId)
+    .single();
+
+  if (error) {
+    console.error(`[sandbox] Unable to load project sandbox info for ${projectId}:`, error);
+    return null;
+  }
+
+  return data?.sandbox_id || null;
+}
 
 export interface ToolContext {
   projectId: string;
@@ -33,46 +113,348 @@ export async function getOrCreateSandbox(
   userId: string,
   template: string = 'vite-react'
 ): Promise<{ sandboxId: string; sandbox: any }> {
-  const daytona = new Daytona({
-    apiKey: process.env.DAYTONA_KEY || '',
-    apiUrl: process.env.DAYTONA_URL || 'https://api.daytona.io',
-  });
+  const daytona = createDaytonaClient();
+  const existingSandboxId = await loadProjectSandbox(projectId, userId);
 
-  // Check if project has existing sandbox
-  const { data: project } = await supabaseAdmin
-    .from('projects')
-    .select('sandbox_id')
-    .eq('id', projectId)
-    .eq('user_id', userId)
-    .single();
-
-  if (project?.sandbox_id) {
+  if (existingSandboxId) {
     try {
-      // Try to get existing sandbox - Daytona API may vary
-      // For now, we'll create a new one if lookup fails
-      const sandbox = await daytona.get(project.sandbox_id);
-      if (sandbox) {
-        return { sandboxId: project.sandbox_id, sandbox };
+      const existingSandbox = await daytona.get(existingSandboxId);
+      const revived = await reviveSandboxIfNeeded(daytona, existingSandbox, projectId);
+      if (revived) {
+        await updateProject(projectId, { sandbox_id: revived.id });
+        return { sandboxId: revived.id, sandbox: revived };
       }
-    } catch (e) {
-      console.warn(`Sandbox ${project.sandbox_id} not found, creating new one`);
+    } catch (error) {
+      console.warn(`[sandbox] Could not reuse sandbox ${existingSandboxId}, creating new one`, error);
+      try {
+        await updateProject(projectId, { sandbox_id: null });
+      } catch (updateError) {
+        console.warn('[sandbox] Failed to clear sandbox_id while recreating sandbox:', updateError);
+      }
     }
   }
 
-  // Create new sandbox
   const sandbox = await daytona.create({
     image: 'node:20-alpine',
     public: true,
-    //ephemeral: true,
   });
 
-  // Update project with sandbox ID
-  await supabaseAdmin
-    .from('projects')
-    .update({ sandbox_id: sandbox.id })
-    .eq('id', projectId);
+  await setAutoDeleteIntervalMinutes(sandbox, Math.floor(SANDBOX_MAX_IDLE_MS / (1000 * 60)));
+
+  try {
+    await updateProject(projectId, { sandbox_id: sandbox.id });
+  } catch (error) {
+    console.error('[sandbox] Failed to persist new sandbox ID', error);
+  }
 
   return { sandboxId: sandbox.id, sandbox };
+}
+
+export async function pauseSandboxForProject(projectId: string, userId: string): Promise<boolean> {
+  const sandboxId = await loadProjectSandbox(projectId, userId);
+  if (!sandboxId) {
+    console.warn(`[sandbox] Cannot pause: project ${projectId} has no sandbox.`);
+    return false;
+  }
+
+  const daytona = createDaytonaClient();
+  try {
+    const sandbox = await daytona.get(sandboxId);
+    if (sandbox.state === 'stopped') {
+      await setAutoDeleteIntervalMinutes(sandbox, Math.floor(SANDBOX_MAX_IDLE_MS / (1000 * 60)));
+      return true;
+    }
+
+    await sandbox.stop(SANDBOX_START_TIMEOUT_SECONDS);
+    await setAutoDeleteIntervalMinutes(sandbox, Math.floor(SANDBOX_MAX_IDLE_MS / (1000 * 60)));
+    return true;
+  } catch (error) {
+    console.error(`[sandbox] Failed to pause sandbox ${sandboxId}:`, error);
+    return false;
+  }
+}
+
+export async function cleanupSandboxIfInactive(projectId: string, userId: string): Promise<boolean> {
+  const sandboxId = await loadProjectSandbox(projectId, userId);
+  if (!sandboxId) {
+    return false;
+  }
+
+  const daytona = createDaytonaClient();
+  try {
+    const sandbox = await daytona.get(sandboxId);
+    const updatedAt = sandbox.updatedAt ? Date.parse(sandbox.updatedAt) : undefined;
+    const idleDuration = updatedAt ? Date.now() - updatedAt : undefined;
+    const isIdleTooLong = typeof idleDuration === 'number' && idleDuration > SANDBOX_MAX_IDLE_MS;
+    const hasBeenStopped = sandbox.state === 'stopped' || sandbox.state === 'destroyed' || sandbox.state === 'archived';
+
+    if (isIdleTooLong && hasBeenStopped) {
+      console.log(`[sandbox] Removing sandbox ${sandboxId} after ${Math.round(idleDuration! / (1000 * 60 * 60))} hours of inactivity.`);
+      await safeDeleteSandbox(sandbox, sandboxId);
+      await updateProject(projectId, { sandbox_id: null });
+      return true;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('NotFound')) {
+      console.warn(`[sandbox] Sandbox ${sandboxId} already gone, clearing reference.`);
+      await updateProject(projectId, { sandbox_id: null });
+      return true;
+    }
+    console.warn(`[sandbox] Failed to check inactivity for sandbox ${sandboxId}:`, error);
+  }
+
+  return false;
+}
+
+async function getAvailableUiComponents(context: ToolContext): Promise<Set<string>> {
+  const components = new Set<string>();
+  if (!context.sandbox) {
+    return components;
+  }
+
+  try {
+    const result = await context.sandbox.process.executeCommand(
+      'cd /workspace && find src/components/ui -maxdepth 1 -type f \\( -name "*.ts" -o -name "*.tsx" \\)'
+    );
+
+    if (result.result) {
+      const files = result.result.trim().split('\n').filter((line: string) => line);
+      for (const file of files) {
+        const normalized = file
+          .replace('/workspace/', '')
+          .replace(/^src\/components\/ui\//, '')
+          .replace(/\.(tsx|ts)$/, '');
+        if (normalized) {
+          components.add(normalized);
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('[sandbox] Failed to enumerate shadcn/ui components:', error);
+  }
+
+  return components;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function hexToHsl(hex: string): { h: number; s: number; l: number } | null {
+  const normalized = hex.trim().replace('#', '');
+  if (![3, 6].includes(normalized.length)) return null;
+
+  const expand = normalized.length === 3
+    ? normalized.split('').map((ch) => ch + ch).join('')
+    : normalized;
+
+  const r = parseInt(expand.substring(0, 2), 16) / 255;
+  const g = parseInt(expand.substring(2, 4), 16) / 255;
+  const b = parseInt(expand.substring(4, 6), 16) / 255;
+
+  if ([r, g, b].some((v) => Number.isNaN(v))) return null;
+
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r:
+        h = (g - b) / d + (g < b ? 6 : 0);
+        break;
+      case g:
+        h = (b - r) / d + 2;
+        break;
+      case b:
+        h = (r - g) / d + 4;
+        break;
+    }
+    h /= 6;
+  }
+
+  return {
+    h: Math.round(h * 360),
+    s: Math.round(s * 100),
+    l: Math.round(l * 100),
+  };
+}
+
+function formatHsl({ h, s, l }: { h: number; s: number; l: number }): string {
+  return `${Math.round(h)} ${Math.round(s)}% ${Math.round(l)}%`;
+}
+
+function adjustLightness(base: { h: number; s: number; l: number }, delta: number): { h: number; s: number; l: number } {
+  return {
+    h: base.h,
+    s: base.s,
+    l: clamp(base.l + delta, 0, 100),
+  };
+}
+
+function getContrastingForeground(base: { h: number; s: number; l: number }): { h: number; s: number; l: number } {
+  if (base.l >= 55) {
+    return { h: base.h, s: clamp(base.s, 20, 100), l: 10 };
+  }
+  return { h: base.h, s: clamp(base.s, 0, 100), l: 95 };
+}
+
+async function readProjectMetadata(context: ToolContext): Promise<any | null> {
+  if (!context.sandbox) return null;
+  try {
+    const buffer = await context.sandbox.fs.downloadFile('/workspace/src/project-metadata.json');
+    return JSON.parse(buffer.toString('utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function buildColorReplacements(metadata: any): {
+  root: Record<string, string>;
+  dark: Record<string, string>;
+} {
+  const root: Record<string, string> = {};
+  const dark: Record<string, string> = {};
+
+  const brand = metadata?.brand ?? {};
+  const primaryHex = typeof brand.primaryColor === 'string' ? brand.primaryColor : null;
+  const secondaryHex = typeof brand.secondaryColor === 'string' ? brand.secondaryColor : null;
+  const accentColors = Array.isArray(brand.accentColors) ? brand.accentColors.filter((c: any) => typeof c === 'string') : [];
+
+  const applyColor = (
+    hex: string | null,
+    targets: Array<{
+      rootVar: string;
+      foregroundVar?: string;
+      variants?: { name: string; delta: number };
+      darkVar?: string;
+      darkForegroundVar?: string;
+      darkVariants?: { name: string; delta: number };
+    }>
+  ) => {
+    if (!hex) return;
+    const hsl = hexToHsl(hex);
+    if (!hsl) return;
+
+    for (const target of targets) {
+      root[target.rootVar] = formatHsl(hsl);
+      if (target.foregroundVar) {
+        root[target.foregroundVar] = formatHsl(getContrastingForeground(hsl));
+      }
+      if (target.variants) {
+        root[target.variants.name] = formatHsl(adjustLightness(hsl, target.variants.delta));
+      }
+
+      if (target.darkVar) {
+        const darkBase = adjustLightness(hsl, 10);
+        dark[target.darkVar] = formatHsl(darkBase);
+        if (target.darkForegroundVar) {
+          dark[target.darkForegroundVar] = formatHsl(getContrastingForeground(darkBase));
+        }
+        if (target.darkVariants) {
+          dark[target.darkVariants.name] = formatHsl(adjustLightness(hsl, target.darkVariants.delta));
+        }
+      }
+    }
+  };
+
+  applyColor(primaryHex, [
+    {
+      rootVar: '--primary',
+      foregroundVar: '--primary-foreground',
+      variants: { name: '--primary-dark', delta: -15 },
+      darkVar: '--primary',
+      darkForegroundVar: '--primary-foreground',
+      darkVariants: { name: '--primary-dark', delta: -25 },
+    },
+  ]);
+
+  applyColor(secondaryHex, [
+    {
+      rootVar: '--secondary',
+      foregroundVar: '--secondary-foreground',
+      variants: { name: '--secondary-dark', delta: -12 },
+      darkVar: '--secondary',
+      darkForegroundVar: '--secondary-foreground',
+      darkVariants: { name: '--secondary-dark', delta: -22 },
+    },
+  ]);
+
+  if (accentColors.length > 0) {
+    applyColor(accentColors[0], [
+      {
+        rootVar: '--accent',
+        foregroundVar: '--accent-foreground',
+        darkVar: '--accent',
+        darkForegroundVar: '--accent-foreground',
+      },
+    ]);
+  }
+
+  if (accentColors.length > 1) {
+    applyColor(accentColors[1], [
+      {
+        rootVar: '--accent-pink',
+        darkVar: '--accent-pink',
+      },
+    ]);
+  }
+
+  if (accentColors.length > 2) {
+    applyColor(accentColors[2], [
+      {
+        rootVar: '--accent-blue',
+        darkVar: '--accent-blue',
+      },
+    ]);
+  }
+
+  return { root, dark };
+}
+
+function applyCssPalette(template: string, rootReplacements: Record<string, string>, darkReplacements: Record<string, string>): string {
+  const replaceBlock = (block: string, replacements: Record<string, string>) => {
+    return block.replace(/(--[a-zA-Z0-9-]+)(\s*:\s*)([^;]+)(;)/g, (match, name, separator, value, suffix) => {
+      const replacement = replacements[name as string];
+      if (replacement) {
+        return `${name}${separator}${replacement}${suffix}`;
+      }
+      return match;
+    });
+  };
+
+  const rootRegex = /:root\s*{[\s\S]*?}/;
+  const darkRegex = /\.dark\s*{[\s\S]*?}/;
+
+  let output = template;
+  output = output.replace(rootRegex, (block) => replaceBlock(block, rootReplacements));
+  output = output.replace(darkRegex, (block) => replaceBlock(block, darkReplacements));
+  return output;
+}
+
+async function ensureBaseThemeFiles(context: ToolContext): Promise<void> {
+  if (!context.sandbox) return;
+  try {
+    const indexTemplate = await fs.readFile(path.join(process.cwd(), 'templates', 'vite', 'src', 'index.css'), 'utf-8');
+    const metadata = await readProjectMetadata(context);
+    const { root, dark } = buildColorReplacements(metadata);
+    const customizedIndex = applyCssPalette(indexTemplate, root, dark);
+    await context.sandbox.fs.uploadFile(Buffer.from(customizedIndex, 'utf-8'), '/workspace/src/index.css');
+  } catch (error) {
+    console.warn('[theme] Failed to regenerate src/index.css from template:', error);
+  }
+
+  try {
+    const tailwindTemplate = await fs.readFile(path.join(process.cwd(), 'templates', 'vite', 'tailwind.config.ts'), 'utf-8');
+    await context.sandbox.fs.uploadFile(Buffer.from(tailwindTemplate, 'utf-8'), '/workspace/tailwind.config.ts');
+  } catch (error) {
+    console.warn('[theme] Failed to restore tailwind.config.ts from template:', error);
+  }
 }
 
 /**
@@ -167,6 +549,8 @@ export async function toolView(
  */
 const PROTECTED_FILES = [
   'src/main.tsx',
+  'src/index.css',
+  'tailwind.config.ts',
   'postcss.config.js',  // Must be .js - PostCSS doesn't support TypeScript
   'vite.config.ts',
   'tsconfig.json',
@@ -759,95 +1143,136 @@ export async function validateImports(context: ToolContext): Promise<{ valid: bo
     }
 
     const files = findResult.result.trim().split('\n').filter((f: string) => f);
+    const availableUiComponents = await getAvailableUiComponents(context);
+    const allowedUiList = Array.from(availableUiComponents).sort();
+    const allowedUiListText = allowedUiList.length > 0 ? allowedUiList.join(', ') : 'none';
     
     for (const file of files) {
       try {
         const fullPath = file.startsWith('/workspace/') ? file : `/workspace/${file}`;
         const content = await context.sandbox.fs.downloadFile(fullPath);
         const fileContent = content.toString('utf-8');
-        
-        // Extract relative imports (e.g., import Swap from './pages/Swap' or '../components/Header')
-        const relativeImportPattern = /import\s+(?:\{([^}]+)\}|(\w+)(?:\s*,\s*\{([^}]+)\})?)\s+from\s+['"](\.\.?\/[^'"]+)['"]/g;
-        let match;
-        
-        while ((match = relativeImportPattern.exec(fileContent)) !== null) {
-          const defaultImport = match[2]; // Default import name
-          const namedImports = match[1] || match[3]; // Named imports
-          const importPath = match[4]; // Relative path like './pages/Swap' or '../components/Header'
-          
-          // Resolve the actual file path
-          // Normalize file path (remove /workspace/ prefix if present, ensure it starts with src/)
-          let normalizedFile = file.replace(/^\/workspace\//, '').replace(/^\.\//, '');
-          if (!normalizedFile.startsWith('src/')) {
-            normalizedFile = `src/${normalizedFile}`;
-          }
-          
-          const currentDir = normalizedFile.substring(0, normalizedFile.lastIndexOf('/'));
-          
-          // Resolve relative path (handle both ./ and ../)
-          let resolvedPath = importPath.replace(/^\.\//, '').replace(/\/$/, '');
-          const pathParts = currentDir.split('/').filter((p: string) => p); // Remove empty strings
-          const importParts = resolvedPath.split('/').filter((p: string) => p);
-          
-          // Handle parent directory navigation (../)
-          for (const part of importParts) {
-            if (part === '..') {
-              if (pathParts.length > 0) {
-                pathParts.pop();
+
+        const forbiddenLibImportRegex = /import\s+[^'"]*from\s+['"][^'"]*components\/lib\/[^'"]*['"]/g;
+        if (forbiddenLibImportRegex.test(fileContent)) {
+          errors.push(
+            `Forbidden template import in ${file}: never import from "@/components/lib/*". Use the canonical component under "@/components/..." instead.`
+          );
+        }
+
+        const lucideImportRegex = /import\s+{([^}]+)}\s+from\s+['"]lucide-react['"]/g;
+        let lucideMatch: RegExpExecArray | null;
+        while ((lucideMatch = lucideImportRegex.exec(fileContent)) !== null) {
+          const rawIcons = lucideMatch[1]
+            .split(',')
+            .map((icon) => icon.trim())
+            .filter(Boolean);
+          const invalidIcons: string[] = [];
+          const suggestions: string[] = [];
+
+          for (const token of rawIcons) {
+            const iconName = token.split(/\s+as\s+/i)[0]?.trim() || '';
+            if (!iconName) continue;
+            if (!isValidLucideIcon(iconName)) {
+              invalidIcons.push(token);
+              const suggestion = findClosestLucideIcon(iconName);
+              if (suggestion) {
+                suggestions.push(`${iconName}→${suggestion}`);
               }
-            } else if (part !== '.') {
-              pathParts.push(part);
             }
           }
-          
-          resolvedPath = pathParts.join('/');
-          
-          // Try different extensions
+
+          if (invalidIcons.length > 0) {
+            const suggestionText =
+              suggestions.length > 0
+                ? ` Suggested replacements: ${suggestions.join(', ')}.`
+                : ' Refer to the lucide-react catalogue and choose a valid name.';
+            errors.push(
+              `Invalid Lucide icon import in ${file}: ${invalidIcons.join(', ')}.${suggestionText}`
+            );
+          }
+        }
+        
+        const processImport = async (
+          defaultImport: string | undefined,
+          namedImports: string | undefined,
+          resolvedPath: string,
+          importPath: string
+        ) => {
+          if (importPath.includes('components/lib') || resolvedPath.includes('components/lib')) {
+            errors.push(
+              `Forbidden template import in ${file}: "${importPath}". Components under "components/lib" are for reference only—use the canonical component in "src/components".`
+            );
+            return;
+          }
+
+          if (!defaultImport && !namedImports) {
+            return;
+          }
+
+          let normalizedResolvedPath = resolvedPath.replace(/^\/+/, '').replace(/\/$/, '');
+          if (!normalizedResolvedPath.startsWith('src/')) {
+            normalizedResolvedPath = `src/${normalizedResolvedPath}`;
+          }
+
+          const isUiImport = normalizedResolvedPath.startsWith('src/components/ui/');
+          const uiComponentName = isUiImport
+            ? normalizedResolvedPath
+                .replace('src/components/ui/', '')
+                .replace(/\/index$/, '')
+                .replace(/\.(tsx|ts)$/, '')
+            : null;
+
+          if (isUiImport && uiComponentName && !availableUiComponents.has(uiComponentName)) {
+            errors.push(`Invalid shadcn/ui import in ${file}: '${importPath}'. Allowed ui components: ${allowedUiListText}.`);
+            return;
+          }
+
           const possiblePaths = [
-            `${resolvedPath}.tsx`,
-            `${resolvedPath}.ts`,
-            `${resolvedPath}/index.tsx`,
-            `${resolvedPath}/index.ts`,
+            `${normalizedResolvedPath}.tsx`,
+            `${normalizedResolvedPath}.ts`,
+            `${normalizedResolvedPath}/index.tsx`,
+            `${normalizedResolvedPath}/index.ts`,
           ];
-          
+
           let fileExists = false;
           let foundPath = '';
-          
+
           for (const possiblePath of possiblePaths) {
             try {
-              const fullPossiblePath = possiblePath.startsWith('/workspace/') 
-                ? possiblePath 
+              const fullPossiblePath = possiblePath.startsWith('/workspace/')
+                ? possiblePath
                 : `/workspace/${possiblePath}`;
               await context.sandbox.fs.downloadFile(fullPossiblePath);
               fileExists = true;
               foundPath = possiblePath;
               break;
-            } catch (e) {
-              // File doesn't exist at this path, try next
+            } catch {
+              // try next path
             }
           }
-          
+
           if (!fileExists) {
             const importName = defaultImport || (namedImports ? namedImports.split(',')[0].trim() : 'unknown');
-            // Don't report errors for imports that are likely correct but the validation path resolution is wrong
-            // For example, if button.tsx imports from '../lib/utils', it should be '../../lib/utils', but we don't want to auto-create lib/utils
-            const isLikelyPathIssue = importPath.includes('../lib/') && file.includes('components/ui/');
-            
-            if (isLikelyPathIssue) {
-              // This is likely a path resolution issue, not a missing file - skip the error
-              console.log(`⚠️ Import path issue detected: ${file} imports from '${importPath}' (resolved to ${resolvedPath}), but should probably be '../../lib/utils'`);
-              continue; // Skip this import - the auto-fix will handle it during build
+
+            if (isUiImport) {
+              errors.push(`Missing shadcn/ui component in ${file}: '${importPath}'. Allowed ui components: ${allowedUiListText}.`);
+              return;
             }
-            
-            let errorMessage = `Missing file: ${file} imports '${importName}' from '${importPath}' (resolved to ${resolvedPath}) but file doesn't exist`;
+
+            const isLikelyPathIssue = importPath.includes('../lib/') && file.includes('components/ui/');
+            if (isLikelyPathIssue) {
+              console.log(`⚠️ Import path issue detected: ${file} imports from '${importPath}' (resolved to ${normalizedResolvedPath}), but should probably be '../../lib/utils'`);
+              return;
+            }
+
+            let errorMessage = `Missing file: ${file} imports '${importName}' from '${importPath}' (resolved to ${normalizedResolvedPath}) but file doesn't exist`;
             let autoCreated = false;
-            
-            // Try to auto-create missing component files
-            if (defaultImport && (importPath.includes('/pages/') || resolvedPath.includes('/pages/'))) {
-              // It's a page component - create a placeholder
+
+            if (defaultImport && (importPath.includes('/pages/') || normalizedResolvedPath.includes('/pages/'))) {
               const pageName = defaultImport;
-              const pageFile = `${resolvedPath}.tsx`;
-              
+              const pageFile = `${normalizedResolvedPath}.tsx`;
+
               try {
                 const placeholderContent = `import React from 'react';
 
@@ -861,12 +1286,11 @@ export default function ${pageName}() {
 }
 `;
                 const fullPagePath = pageFile.startsWith('/workspace/') ? pageFile : `/workspace/${pageFile}`;
-                // Ensure directory exists
                 const pageDir = fullPagePath.substring(0, fullPagePath.lastIndexOf('/'));
                 try {
                   await context.sandbox.fs.createFolder(pageDir, '755');
-                } catch (e) {
-                  // Directory might already exist, that's fine
+                } catch {
+                  // directory may already exist
                 }
                 await context.sandbox.fs.uploadFile(Buffer.from(placeholderContent), fullPagePath);
                 console.log(`✅ Auto-created missing page component: ${pageFile}`);
@@ -874,11 +1298,14 @@ export default function ${pageName}() {
               } catch (createError: any) {
                 console.warn(`Could not auto-create ${pageFile}:`, createError.message);
               }
-            } else if (defaultImport && (importPath.includes('/components/') || resolvedPath.includes('/components/'))) {
-              // It's a component - create a placeholder
+            } else if (
+              defaultImport &&
+              !isUiImport &&
+              (importPath.includes('/components/') || normalizedResolvedPath.includes('/components/'))
+            ) {
               const componentName = defaultImport;
-              const componentFile = `${resolvedPath}.tsx`;
-              
+              const componentFile = `${normalizedResolvedPath}.tsx`;
+
               try {
                 const placeholderContent = `import React from 'react';
 
@@ -892,12 +1319,11 @@ export default function ${componentName}() {
 }
 `;
                 const fullComponentPath = componentFile.startsWith('/workspace/') ? componentFile : `/workspace/${componentFile}`;
-                // Ensure directory exists
                 const componentDir = fullComponentPath.substring(0, fullComponentPath.lastIndexOf('/'));
                 try {
                   await context.sandbox.fs.createFolder(componentDir, '755');
-                } catch (e) {
-                  // Directory might already exist, that's fine
+                } catch {
+                  // directory may already exist
                 }
                 await context.sandbox.fs.uploadFile(Buffer.from(placeholderContent), fullComponentPath);
                 console.log(`✅ Auto-created missing component: ${componentFile}`);
@@ -906,30 +1332,72 @@ export default function ${componentName}() {
                 console.warn(`Could not auto-create ${componentFile}:`, createError.message);
               }
             }
-            
-            // Only add error if we couldn't auto-create
+
             if (!autoCreated) {
               errors.push(errorMessage);
             }
-          } else if (defaultImport) {
-            // Check if default export exists
+            return;
+          }
+
+          if (defaultImport) {
             try {
               const importedContent = await context.sandbox.fs.downloadFile(
                 foundPath.startsWith('/workspace/') ? foundPath : `/workspace/${foundPath}`
               );
               const importedFileContent = importedContent.toString('utf-8');
-              
-              // Check for default export
-              const hasDefaultExport = /export\s+default\s+/.test(importedFileContent) ||
-                                     /export\s+(?:default\s+)?(?:function|const|class)\s+/.test(importedFileContent);
-              
+              const hasDefaultExport =
+                /export\s+default\s+/.test(importedFileContent) ||
+                /export\s+(?:default\s+)?(?:function|const|class)\s+/.test(importedFileContent);
+
               if (!hasDefaultExport) {
                 errors.push(`Missing default export: ${file} imports '${defaultImport}' from '${importPath}' but file has no default export`);
               }
-            } catch (e) {
-              // Couldn't read the file, skip validation
+            } catch {
+              // ignore
             }
           }
+        };
+
+        // Extract relative imports (e.g., import Swap from './pages/Swap' or '../components/Header')
+        const relativeImportPattern = /import\s+(?:\{([^}]+)\}|(\w+)(?:\s*,\s*\{([^}]+)\})?)\s+from\s+['"](\.\.?\/[^'"]+)['"]/g;
+        let match;
+        
+        while ((match = relativeImportPattern.exec(fileContent)) !== null) {
+          const defaultImport = match[2];
+          const namedImports = match[1] || match[3];
+          const importPath = match[4];
+          
+          let normalizedFile = file.replace(/^\/workspace\//, '').replace(/^\.\//, '');
+          if (!normalizedFile.startsWith('src/')) {
+            normalizedFile = `src/${normalizedFile}`;
+          }
+          
+          const currentDir = normalizedFile.substring(0, normalizedFile.lastIndexOf('/'));
+          let resolvedPath = importPath.replace(/^\.\//, '').replace(/\/$/, '');
+          const pathParts = currentDir.split('/').filter((p: string) => p);
+          const importParts = resolvedPath.split('/').filter((p: string) => p);
+          
+          for (const part of importParts) {
+            if (part === '..') {
+              if (pathParts.length > 0) {
+                pathParts.pop();
+              }
+            } else if (part !== '.') {
+              pathParts.push(part);
+            }
+          }
+          
+          resolvedPath = pathParts.join('/');
+          await processImport(defaultImport, namedImports, resolvedPath, importPath);
+        }
+
+        const aliasImportPattern = /import\s+(?:\{([^}]+)\}|(\w+)(?:\s*,\s*\{([^}]+)\})?)\s+from\s+['"]@\/([^'"]+)['"]/g;
+        while ((match = aliasImportPattern.exec(fileContent)) !== null) {
+          const defaultImport = match[2];
+          const namedImports = match[1] || match[3];
+          const importPath = match[4];
+          const resolvedPath = `src/${importPath.replace(/^\//, '').replace(/\/$/, '')}`;
+          await processImport(defaultImport, namedImports, resolvedPath, `@/${importPath}`);
         }
       } catch (error: any) {
         // Skip files that can't be read
@@ -1523,7 +1991,7 @@ async function ensurePageRoutes(context: ToolContext): Promise<void> {
   }
 }
 
-async function localizeRemoteImages(context: ToolContext): Promise<void> {
+export async function localizeRemoteImages(context: ToolContext): Promise<void> {
   if (!context.sandbox) return;
 
   try {
@@ -1533,14 +2001,6 @@ async function localizeRemoteImages(context: ToolContext): Promise<void> {
     const result = await context.sandbox.process.executeCommand(command);
     const files = (result.result || '').trim().split('\n').filter((f: string) => f);
     if (files.length === 0) return;
-
-    const gradients = [
-      ['#5A31F4', '#FF2D92'],
-      ['#2563eb', '#22d3ee'],
-      ['#7f5cf3', '#f97316'],
-      ['#1f2937', '#0ea5e9'],
-      ['#9333ea', '#facc15']
-    ];
 
     const cache = new Map<string, string>();
 
@@ -1554,87 +2014,175 @@ async function localizeRemoteImages(context: ToolContext): Promise<void> {
       }
 
       let content = fileBuffer.toString('utf-8');
-      if (!content.includes('<img')) continue;
+      let modified = false;
 
-      const remoteImgRegex = /<img[^>]*src=["'](https?:[^"']+)["'][^>]*>/gi;
-      const matches = Array.from(content.matchAll(remoteImgRegex));
-      if (matches.length === 0) continue;
+      if (content.includes('<img')) {
+        const remoteImgRegex = /<img[^>]*src=["'](https?:[^"']+)["'][^>]*>/gi;
+        const remoteMatches = Array.from(content.matchAll(remoteImgRegex));
 
-      for (const match of matches) {
-        const fullTag = match[0];
-        const src = match[1];
-        if (!src) continue;
+        for (const match of remoteMatches) {
+          const fullTag = match[0];
+          const src = match[1];
+          if (!src) continue;
 
-        let replacement: string | null = cache.get(src) ?? null;
-        if (!replacement) {
-          replacement = await fetchRemoteImageToPublic(src, context, gradients);
-          if (replacement) {
+          const tagAltMatch = fullTag.match(/alt=["']([^"']*)["']/i);
+          const altText = (tagAltMatch?.[1] || 'Generated visual').slice(0, 80);
+          const sanitizedAlt = altText.replace(/[<>&]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[ch] || ch));
+
+          let replacement: string | null = cache.get(src) ?? null;
+          if (!replacement) {
+            const aiImage = await generateAiImageToSandbox({
+              description: sanitizedAlt,
+              sandbox: context.sandbox,
+              requestId: `tool-${context.projectId}-${Date.now()}`,
+            });
+            replacement = aiImage.src;
             cache.set(src, replacement);
-          } else {
-            continue;
+            console.log(`[tool-images] Replaced remote image ${src} -> ${replacement} (origin=${aiImage.origin})`);
+          }
+
+          const escapedSrc = src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const beforeReplace = content;
+          content = content.replace(new RegExp(escapedSrc, 'g'), replacement);
+          if (content !== beforeReplace) {
+            modified = true;
+          }
+
+          if (!tagAltMatch) {
+            const escapedReplacement = replacement.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const withoutAlt = new RegExp(`<img([^>]*?)src=["']${escapedReplacement}["']([^>]*?)>`, 'i');
+            const beforeAlt = content;
+            content = content.replace(
+              withoutAlt,
+              `<img$1src="${replacement}" alt="${sanitizedAlt}"$2>`
+            );
+            if (content !== beforeAlt) {
+              modified = true;
+            }
           }
         }
 
-        const escapedSrc = src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const tagAltMatch = fullTag.match(/alt=["']([^"']*)["']/i);
-        const altText = (tagAltMatch?.[1] || 'Generated visual').slice(0, 80);
-        const sanitizedAlt = altText.replace(/[<>&]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[ch] || ch));
+        const localImgRegex = /<img[^>]*src=["']\/([^"']+)["'][^>]*>/gi;
+        const localMatches = Array.from(content.matchAll(localImgRegex));
+        for (const match of localMatches) {
+          const fullTag = match[0];
+          const relPath = match[1];
+          if (!relPath) continue;
 
-        // Ensure alt text preserved in fallback replacements
-        if (!tagAltMatch && replacement.endsWith('.svg')) {
-          // nothing to do - gradient already includes text
-        }
+          const cacheKey = `local:${relPath}`;
+          let replacement: string | null = cache.get(cacheKey) ?? null;
 
-        content = content.replace(new RegExp(escapedSrc, 'g'), replacement);
-        // Also ensure alt attribute exists
-        if (!tagAltMatch) {
-          const withoutAlt = new RegExp(`<img([^>]*?)src=["']${replacement.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']([^>]*?)>`, 'i');
-          content = content.replace(withoutAlt, `<img$1src="${replacement}" alt="${sanitizedAlt}"$2>`);
+          if (!replacement) {
+            // Check if image exists in sandbox
+            let imageExists = false;
+            try {
+              await context.sandbox.fs.downloadFile(`/workspace/public/${relPath}`);
+              imageExists = true;
+              cache.set(cacheKey, `/${relPath}`);
+              console.log(`[tool-images] Image exists: /${relPath}`);
+            } catch (error: any) {
+              imageExists = false;
+              console.log(`[tool-images] Image missing: /${relPath} (${error?.message || 'not found'})`);
+            }
+
+            // If image doesn't exist (including generated-images), generate it
+            if (!imageExists) {
+              // Extract alt text for better description, or use filename
+              const tagAltMatch = fullTag.match(/alt=["']([^"']*)["']/i);
+              let description = tagAltMatch?.[1] || relPath.replace(/[-_./]/g, ' ').replace(/\.[^.]+$/, '');
+              // Clean up description
+              description = description.trim() || 'hero background image';
+              
+              console.log(`[tool-images] Generating image for "${relPath}" with description: "${description}"`);
+              const aiImage = await generateAiImageToSandbox({
+                description,
+                sandbox: context.sandbox,
+                requestId: `tool-${context.projectId}-${Date.now()}`,
+              });
+              replacement = aiImage.src;
+              cache.set(cacheKey, replacement);
+              console.log(
+                `[tool-images] ✅ Generated missing image "${relPath}" -> ${replacement} (origin=${aiImage.origin})`
+              );
+            } else {
+              continue; // Image exists, no need to replace
+            }
+          }
+
+          // Replace the src in the img tag
+          const escapedRelPath = relPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const srcRegex = new RegExp(`src=["']/${escapedRelPath}["']`, 'i');
+          const newTag = fullTag.replace(srcRegex, `src="${replacement}"`);
+          if (newTag !== fullTag) {
+            const beforeReplace = content;
+            content = content.replace(fullTag, newTag);
+            modified = true;
+            console.log(`[tool-images] Updated img tag: ${relPath} -> ${replacement}`);
+            if (content === beforeReplace) {
+              console.warn(`[tool-images] ⚠️ Replacement didn't change content for ${relPath}`);
+            }
+          }
         }
       }
 
-      await context.sandbox.fs.uploadFile(Buffer.from(content, 'utf-8'), fullPath);
+      if (content.includes('url(')) {
+        const cssUrlRegex = /url\((['"]?)(\/[^'")]+)\1\)/gi;
+        const cssMatches = Array.from(content.matchAll(cssUrlRegex));
+        for (const match of cssMatches) {
+          const whole = match[0];
+          const quote = match[1] || '';
+          const relPathWithSlash = match[2];
+          if (!relPathWithSlash) continue;
+          const relPath = relPathWithSlash.startsWith('/') ? relPathWithSlash.slice(1) : relPathWithSlash;
+
+          const cacheKey = `local-css:${relPath}`;
+          let replacement: string | null = cache.get(cacheKey) ?? null;
+
+          if (!replacement) {
+            // Check if image exists in sandbox
+            let imageExists = false;
+            try {
+              await context.sandbox.fs.downloadFile(`/workspace/public/${relPath}`);
+              imageExists = true;
+              cache.set(cacheKey, `/${relPath}`);
+            } catch {
+              imageExists = false;
+            }
+
+            // If image doesn't exist (including generated-images), generate it
+            if (!imageExists) {
+              const aiImage = await generateAiImageToSandbox({
+                description: relPath.replace(/[-_./]/g, ' ').replace(/\.[^.]+$/, '').trim() || 'background image',
+                sandbox: context.sandbox,
+                requestId: `tool-${context.projectId}-${Date.now()}`,
+              });
+              replacement = aiImage.src;
+              cache.set(cacheKey, replacement);
+              console.log(
+                `[tool-images] Generated missing CSS asset "${relPath}" -> ${replacement} (origin=${aiImage.origin})`
+              );
+            } else {
+              continue; // Image exists, no need to replace
+            }
+          }
+
+          const newSnippet = `url(${quote}${replacement}${quote})`;
+          if (newSnippet !== whole) {
+            content = content.replace(whole, newSnippet);
+            modified = true;
+          }
+        }
+      }
+
+      if (modified) {
+        await context.sandbox.fs.uploadFile(Buffer.from(content, 'utf-8'), fullPath);
+        console.log(`[tool-images] ✅ Saved updated file: ${fullPath}`);
+      }
     }
+    
+    console.log(`[tool-images] ✅ Image localization complete. Processed ${files.length} file(s).`);
   } catch (error: any) {
     console.warn('⚠️ Failed to localize remote images:', error.message);
-  }
-}
-
-async function fetchRemoteImageToPublic(url: string, context: ToolContext, gradients: string[][]): Promise<string | null> {
-  try {
-    const response = await fetch(url, { redirect: 'follow' });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.startsWith('image/')) {
-      throw new Error(`Unsupported content type: ${contentType}`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-    if (arrayBuffer.byteLength > 8 * 1024 * 1024) {
-      throw new Error('Image too large');
-    }
-    const extensionMap: Record<string, string> = {
-      'image/png': 'png',
-      'image/jpeg': 'jpg',
-      'image/jpg': 'jpg',
-      'image/webp': 'webp',
-      'image/gif': 'gif',
-      'image/svg+xml': 'svg',
-      'image/avif': 'avif'
-    };
-    const extension = extensionMap[contentType] || 'png';
-    const fileName = `generated-images/${crypto.randomUUID()}.${extension}`;
-    await context.sandbox.fs.uploadFile(Buffer.from(arrayBuffer), `/workspace/public/${fileName}`);
-    return `/${fileName}`;
-  } catch (error) {
-    console.warn(`⚠️ Failed to fetch remote image ${url}:`, (error as Error).message);
-    const [startColor, endColor] = gradients[Math.floor(Math.random() * gradients.length)];
-    const gradientId = `grad_${crypto.randomUUID().replace(/-/g, '')}`;
-    const fallbackFile = `generated-images/${crypto.randomUUID()}.svg`;
-    const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">\n  <defs>\n    <linearGradient id="${gradientId}" x1="0%" y1="0%" x2="100%" y2="100%">\n      <stop offset="0%" stop-color="${startColor}"/>\n      <stop offset="100%" stop-color="${endColor}"/>\n    </linearGradient>\n  </defs>\n  <rect width="1600" height="900" fill="url(#${gradientId})"/>\n</svg>`;
-    await context.sandbox.fs.uploadFile(Buffer.from(svg, 'utf-8'), `/workspace/public/${fallbackFile}`);
-    return `/${fallbackFile}`;
   }
 }
 
@@ -2136,11 +2684,12 @@ export async function validateAndFixConfigFiles(context: ToolContext): Promise<v
       const content = mainContent.toString('utf-8');
       
       // Check if BrowserRouter is missing
-      if (!content.includes('BrowserRouter') && !content.includes('react-router-dom')) {
-        console.log('⚠️ main.tsx missing BrowserRouter, restoring from template...');
+      if (!content.includes('BrowserRouter') || !content.includes('HelmetProvider')) {
+        console.log('⚠️ main.tsx missing required providers, restoring from template...');
         const correctMain = `import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
+import { HelmetProvider } from 'react-helmet-async'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import App from './App.tsx'
 import './index.css'
@@ -2166,18 +2715,44 @@ window.addEventListener('unhandledrejection', (event) => {
   })
 })
 
+if (!document.documentElement.classList.contains('dark')) {
+  document.documentElement.classList.add('dark')
+}
+
+document.body.classList.add('bg-background', 'text-foreground')
+
+const getBaseName = () => {
+  const previewPrefix = '/api/preview/'
+  const { pathname } = window.location
+
+  if (pathname.startsWith(previewPrefix)) {
+    const segments = pathname.split('/')
+    if (segments.length >= 5) {
+      const base = segments.slice(0, 5).join('/')
+      return base || '/'
+    }
+  }
+
+  const baseEnv = (import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env
+  return baseEnv?.BASE_URL ?? '/'
+}
+
+const basename = getBaseName()
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ErrorBoundary>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </ErrorBoundary>
+    <HelmetProvider>
+      <ErrorBoundary>
+        <BrowserRouter basename={basename}>
+          <App />
+        </BrowserRouter>
+      </ErrorBoundary>
+    </HelmetProvider>
   </React.StrictMode>,
 )
 `;
         await context.sandbox.fs.uploadFile(Buffer.from(correctMain), '/workspace/src/main.tsx');
-        console.log('✅ Restored main.tsx with BrowserRouter');
+        console.log('✅ Restored main.tsx with BrowserRouter and providers');
       }
     } catch (e) {
       console.warn('⚠️ Could not validate main.tsx:', e);
@@ -2922,6 +3497,92 @@ export function ${fix.componentName}() {
       }
     } catch (error: any) {
       console.warn(`⚠️ Could not auto-fix classNameName in ${filePath}:`, error.message);
+    }
+  }
+  
+  // Pattern: src/components/StatsStrip.tsx(10,30): error TS2339: Property 'total_users' does not exist on type 'Metric'
+  // Fix property access errors on interfaces (e.g., Metric interface)
+  const propertyErrorPattern = /([\w\/\.-]+)\((\d+),(\d+)\): error TS2339: Property '(\w+)' does not exist on type '(\w+)'/g;
+  const propertyErrorFixes: Array<{ file: string; line: number; column: number; property: string; type: string }> = [];
+  
+  // Known interface property mappings
+  const interfaceProperties: Record<string, string[]> = {
+    'Metric': ['id', 'label', 'value', 'icon'],
+    'Testimonial': ['id', 'name', 'role', 'quote', 'avatar'],
+    'Feature': ['id', 'title', 'description', 'icon', 'badge'],
+  };
+  
+  while ((match = propertyErrorPattern.exec(errorOutput)) !== null) {
+    const filePath = match[1].replace(/^src\//, 'src/');
+    const lineNum = parseInt(match[2], 10);
+    const columnNum = parseInt(match[3], 10);
+    const property = match[4];
+    const type = match[5];
+    
+    propertyErrorFixes.push({ file: filePath, line: lineNum, column: columnNum, property, type });
+  }
+  
+  // Fix property access errors
+  for (const fix of propertyErrorFixes) {
+    try {
+      const fullPath = fix.file.startsWith('/workspace/') ? fix.file : `/workspace/${fix.file}`;
+      const content = await context.sandbox.fs.downloadFile(fullPath);
+      let fileContent = content.toString('utf-8');
+      const lines = fileContent.split('\n');
+      const errorLine = lines[fix.line - 1];
+      
+      if (!errorLine) continue;
+      
+      // Get the valid properties for this type
+      const validProperties = interfaceProperties[fix.type] || [];
+      if (validProperties.length === 0) {
+        console.warn(`⚠️ Unknown type ${fix.type} for property error in ${fix.file}`);
+        continue;
+      }
+      
+      // Check if the property is accessed (e.g., metric.total_users)
+      // We need to replace it with a valid property
+      // For Metric, common mappings:
+      // - total_users -> value (or label)
+      // - games_played -> value
+      // - active_players -> value
+      const propertyMappings: Record<string, Record<string, string>> = {
+        'Metric': {
+          'total_users': 'value',
+          'games_played': 'value',
+          'active_players': 'value',
+          'users': 'value',
+          'games': 'value',
+          'players': 'value',
+        }
+      };
+      
+      const typeMappings = propertyMappings[fix.type] || {};
+      const replacement = typeMappings[fix.property] || validProperties[0]; // Default to first valid property
+      
+      // Replace the property access in the error line
+      // Pattern: metric.total_users -> metric.value
+      // Be careful to only replace the specific property access on the error line
+      const propertyAccessPattern = new RegExp(`\\.${fix.property}\\b`, 'g');
+      const newErrorLine = errorLine.replace(propertyAccessPattern, `.${replacement}`);
+      
+      if (newErrorLine !== errorLine) {
+        lines[fix.line - 1] = newErrorLine;
+        fileContent = lines.join('\n');
+        await context.sandbox.fs.uploadFile(Buffer.from(fileContent), fullPath);
+        console.log(`✅ Auto-fixed property access in ${fix.file}:${fix.line} - ${fix.type}.${fix.property} -> ${fix.type}.${replacement}`);
+      } else {
+        // Try a more aggressive replacement (might be part of a larger expression)
+        // Replace all occurrences of the invalid property in the file
+        const globalPattern = new RegExp(`\\.${fix.property}\\b`, 'g');
+        if (fileContent.includes(`.${fix.property}`)) {
+          fileContent = fileContent.replace(globalPattern, `.${replacement}`);
+          await context.sandbox.fs.uploadFile(Buffer.from(fileContent), fullPath);
+          console.log(`✅ Auto-fixed property access in ${fix.file}: Replaced all ${fix.type}.${fix.property} -> ${fix.type}.${replacement}`);
+        }
+      }
+    } catch (error: any) {
+      console.warn(`⚠️ Could not auto-fix property error in ${fix.file}:`, error.message);
     }
   }
   
@@ -3697,6 +4358,9 @@ export async function buildAndUploadProject(
         }
       }
     }
+
+    // Restore theme files and apply brand palette
+    await ensureBaseThemeFiles(context);
 
     // Validate and fix config files FIRST (before pre-compilation)
     await validateAndFixConfigFiles(context);
